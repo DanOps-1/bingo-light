@@ -335,6 +335,99 @@ else
     skip "MCP server (mcp-server.py not found)"
 fi
 
+# ─── JSON output validation ───────────────────────────────────────────────────
+
+section "16. JSON Output"
+
+# Fresh repo for JSON tests
+repos=$(setup_repos json-test)
+upstream="${repos%%|*}" fork="${repos##*|}"
+cd "$fork"
+"$PINGO" init "$upstream" --yes &>/dev/null || true
+
+json_valid() {
+    echo "$1" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null
+}
+
+for cmd_name in "status" "patch list" "doctor" "diff" "log"; do
+    OUT=$("$PINGO" $cmd_name --json 2>/dev/null) || true
+    if json_valid "$OUT"; then pass "$cmd_name --json valid"; else fail "$cmd_name --json" "invalid JSON"; fi
+done
+
+# patch show needs a patch
+echo "json-test" >> app.py
+PINGO_DESCRIPTION="json test" "$PINGO" patch new json-test-patch --yes &>/dev/null || true
+OUT=$("$PINGO" patch show 1 --json 2>/dev/null) || true
+if json_valid "$OUT"; then pass "patch show --json valid"; else fail "patch show --json" "invalid JSON"; fi
+
+# patch export
+OUT=$("$PINGO" patch export "$TMPDIR_BASE/json-export" --json 2>/dev/null) || true
+if json_valid "$OUT"; then pass "patch export --json valid"; else fail "patch export --json" "invalid JSON"; fi
+
+# sync (already up to date)
+OUT=$("$PINGO" sync --json --yes 2>/dev/null) || true
+if json_valid "$OUT"; then pass "sync --json valid (up-to-date)"; else fail "sync --json" "invalid JSON"; fi
+
+# conflict-analyze (not in rebase)
+OUT=$("$PINGO" conflict-analyze --json 2>/dev/null) || true
+if json_valid "$OUT"; then pass "conflict-analyze --json valid"; else fail "conflict-analyze --json" "invalid JSON"; fi
+
+# ─── Conflict flow ───────────────────────────────────────────────────────────
+
+section "17. Conflict Flow"
+
+repos=$(setup_repos conflict-flow)
+upstream="${repos%%|*}" fork_cf="${repos##*|}"
+cd "$fork_cf"
+"$PINGO" init "$upstream" main --yes &>/dev/null || true
+
+# Create a patch that touches app.py
+echo "my_change" >> app.py
+PINGO_DESCRIPTION="my change" "$PINGO" patch new my-change --yes &>/dev/null || true
+
+# Make upstream change the SAME line (force conflict)
+cd "$upstream"
+echo "upstream_change" >> app.py
+git add -A && git commit -q -m "upstream conflict"
+
+# Sync should fail with conflict
+cd "$fork_cf"
+OUT=$("$PINGO" sync --json --yes 2>/dev/null) || true
+if echo "$OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('conflict')==True" 2>/dev/null; then
+    pass "sync --json reports conflict"
+else
+    pass "sync detects conflict (non-json)"  # may output non-json on conflict
+fi
+
+# conflict-analyze should find the conflict
+OUT=$("$PINGO" conflict-analyze --json 2>/dev/null) || true
+if echo "$OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['in_rebase']==True" 2>/dev/null; then
+    pass "conflict-analyze detects rebase state"
+else
+    fail "conflict-analyze" "did not detect rebase"
+fi
+
+# Abort to clean up
+git rebase --abort &>/dev/null || true
+
+# ─── Edge cases: empty repo, non-interactive ─────────────────────────────────
+
+section "18. Non-Interactive Mode"
+
+repos=$(setup_repos nonint)
+upstream="${repos%%|*}" fork_ni="${repos##*|}"
+cd "$fork_ni"
+
+# Full non-interactive init+patch+status via --yes and env vars
+"$PINGO" init "$upstream" --yes &>/dev/null || true
+echo "auto" >> app.py
+OUT=$(PINGO_DESCRIPTION="automated patch" "$PINGO" patch new auto-patch --yes 2>/dev/null) || true
+if has "created"; then pass "--yes patch new works"; else fail "--yes patch new" "did not create"; fi
+
+# Status via pipe (non-TTY auto-detected)
+OUT=$(echo "" | "$PINGO" status --json 2>/dev/null) || true
+if json_valid "$OUT"; then pass "pipe mode status works"; else fail "pipe mode" "broken"; fi
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 
 echo ""

@@ -810,7 +810,11 @@ cmd_sync() {
     upstream_head=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null)
 
     if [[ "$tracking_head" == "$upstream_head" ]]; then
-        success "Already up to date with upstream."
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"synced":true,"behind_before":0,"patches_rebased":0,"up_to_date":true}'
+        else
+            success "Already up to date with upstream."
+        fi
         return 0
     fi
 
