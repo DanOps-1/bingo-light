@@ -1,26 +1,22 @@
 #!/usr/bin/env python3
 """
-pingo-light agent — Autonomous fork maintenance powered by LLM.
+pingo-light agent — Intelligent fork maintenance advisor.
 
-Monitors upstream changes, syncs automatically, resolves conflicts via Claude,
-and reports results through GitHub Issues/PRs.
+Monitors upstream, auto-syncs when safe, analyzes and explains conflicts
+when not. The agent NEVER auto-resolves conflicts or auto-pushes code.
 
-Architecture inspired by Claude Code's agent loop:
-  observe → think (LLM) → act (tools) → observe
+Philosophy:
+  - Safe ops (no conflict): auto-execute
+  - Risky ops (conflict):   analyze → explain → recommend → WAIT for human
+  - LLM role: analyst, not executor — understands intent, explains trade-offs
+
+Architecture (inspired by Claude Code's agent loop):
+  observe → analyze → safe-act or report → wait
 
 Usage:
-  # One-shot: check and sync now
-  python3 agent.py --cwd /path/to/repo
-
-  # Daemon: check every 6 hours
-  python3 agent.py --cwd /path/to/repo --daemon --interval 6h
-
-  # Dry run: see what would happen without acting
-  python3 agent.py --cwd /path/to/repo --dry-run
-
-Environment:
-  ANTHROPIC_API_KEY  — Required for conflict resolution
-  GITHUB_TOKEN       — Optional, for creating Issues/PRs
+  python3 agent.py --cwd /path/to/repo                  # check + sync if safe
+  python3 agent.py --cwd /path/to/repo --report          # full analysis report
+  python3 agent.py --cwd /path/to/repo --watch --interval 6h  # periodic monitor
 """
 
 import argparse
@@ -37,447 +33,605 @@ from pathlib import Path
 
 PINGO_BIN = os.environ.get("PINGO_LIGHT_BIN", str(Path(__file__).parent / "pingo-light"))
 STATE_FILE = ".pingo-agent-state.json"
+REPORT_FILE = ".pingo-report.md"
 MAX_RETRIES = 3
-RETRY_BASE_DELAY = 2  # seconds
+RETRY_BASE_DELAY = 2
 
-# ─── Tool Layer: wraps pingo-light CLI ────────────────────────────────────────
+# ─── Infra: CLI + Git + LLM ──────────────────────────────────────────────────
 
 def run_pingo(args: list[str], cwd: str) -> dict:
     """Run pingo-light with --json --yes and return parsed result."""
     cmd = [PINGO_BIN, "--json", "--yes"] + args
     env = {**os.environ, "NO_COLOR": "1"}
     result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=120, env=env)
-
     stdout = result.stdout.strip()
-    # Try to parse JSON from output
     if stdout:
         try:
             return json.loads(stdout)
         except json.JSONDecodeError:
             pass
-
-    # Fallback: return raw output
-    return {
-        "ok": result.returncode == 0,
-        "raw_output": stdout,
-        "stderr": result.stderr.strip(),
-    }
+    return {"ok": result.returncode == 0, "raw": stdout, "stderr": result.stderr.strip()}
 
 
 def run_git(args: list[str], cwd: str) -> str:
-    """Run a git command and return stdout."""
     result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+        raise RuntimeError(f"git {' '.join(args)}: {result.stderr.strip()}")
     return result.stdout.strip()
 
-# ─── LLM Layer: Claude API for decision-making ───────────────────────────────
 
 def call_llm(system: str, prompt: str, model: str = "claude-sonnet-4-20250514") -> str:
-    """
-    Call Claude API. Implements retry with exponential backoff,
-    inspired by Claude Code's withRetry pattern.
-    """
+    """Call Claude API with retry. Used for ANALYSIS only, never for code execution."""
+    import urllib.request, urllib.error
+
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set. LLM conflict resolution requires an API key.")
+        return ""  # Graceful degradation: agent works without LLM, just less insightful
 
-    import urllib.request
-    import urllib.error
-
-    url = "https://api.anthropic.com/v1/messages"
-    headers = {
-        "x-api-key": api_key,
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
-    }
     body = json.dumps({
-        "model": model,
-        "max_tokens": 8192,
-        "system": system,
+        "model": model, "max_tokens": 4096, "system": system,
         "messages": [{"role": "user", "content": prompt}],
     }).encode()
+    headers = {"x-api-key": api_key, "content-type": "application/json", "anthropic-version": "2023-06-01"}
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, headers=headers)
             with urllib.request.urlopen(req, timeout=120) as resp:
-                data = json.loads(resp.read())
-                return data["content"][0]["text"]
-        except urllib.error.HTTPError as e:
-            if e.code in (429, 529) and attempt < MAX_RETRIES:
-                delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                log(f"  API rate limited ({e.code}), retrying in {delay}s... (attempt {attempt}/{MAX_RETRIES})")
-                time.sleep(delay)
-                continue
-            raise
-        except urllib.error.URLError as e:
+                return json.loads(resp.read())["content"][0]["text"]
+        except (urllib.error.HTTPError, urllib.error.URLError):
             if attempt < MAX_RETRIES:
-                delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                log(f"  Connection error, retrying in {delay}s... (attempt {attempt}/{MAX_RETRIES})")
-                time.sleep(delay)
+                time.sleep(RETRY_BASE_DELAY * (2 ** (attempt - 1)))
                 continue
-            raise
+            return ""  # Fail gracefully
+    return ""
 
-    raise RuntimeError("Max retries exceeded")
-
-# ─── State Persistence (inspired by Claude Code's sessionStorage) ─────────────
+# ─── State ────────────────────────────────────────────────────────────────────
 
 def load_state(cwd: str) -> dict:
     path = os.path.join(cwd, STATE_FILE)
     if os.path.exists(path):
         with open(path) as f:
             return json.load(f)
-    return {"last_check": None, "last_sync": None, "sync_count": 0, "conflict_resolutions": 0, "errors": []}
+    return {"last_check": None, "last_sync": None, "sync_count": 0, "reports": 0}
 
 
 def save_state(cwd: str, state: dict):
-    path = os.path.join(cwd, STATE_FILE)
-    with open(path, "w") as f:
+    with open(os.path.join(cwd, STATE_FILE), "w") as f:
         json.dump(state, f, indent=2, default=str)
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
 QUIET = False
-
 def log(msg: str):
     if not QUIET:
-        ts = datetime.now().strftime("%H:%M:%S")
-        print(f"[{ts}] {msg}", flush=True)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+# ─── Analysis Engine ──────────────────────────────────────────────────────────
+
+def analyze_upstream_changes(cwd: str, tracking: str, upstream_ref: str) -> list[dict]:
+    """Analyze what changed upstream since last sync."""
+    commits = []
+    log_output = run_git(["log", "--format=%H|%s|%an|%cr", f"{tracking}..{upstream_ref}"], cwd)
+    for line in log_output.strip().split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split("|", 3)
+        if len(parts) < 4:
+            continue
+        hash_, subject, author, date = parts
+        # Get changed files for this commit
+        files = run_git(["diff-tree", "--no-commit-id", "-r", "--name-only", hash_], cwd).split("\n")
+        commits.append({"hash": hash_[:8], "subject": subject, "author": author, "date": date, "files": [f for f in files if f]})
+    return commits
 
 
-def log_json(event: str, data: dict):
-    """Structured logging for machine consumption."""
-    entry = {"time": datetime.now(timezone.utc).isoformat(), "event": event, **data}
-    print(json.dumps(entry), flush=True)
+def analyze_patch_impact(cwd: str, upstream_commits: list[dict], patches: list[dict]) -> list[dict]:
+    """For each patch, determine if upstream changes affect the same files."""
+    impacts = []
+    upstream_files = set()
+    for c in upstream_commits:
+        upstream_files.update(c["files"])
 
-# ─── Core Agent Loop ─────────────────────────────────────────────────────────
-# Inspired by Claude Code's query.ts observe→think→act cycle
+    for p in patches:
+        patch_files = set(p.get("files_list", []))
+        overlap = patch_files & upstream_files
+        risk = "none"
+        if overlap:
+            risk = "high" if len(overlap) > 2 else "medium"
+        impacts.append({
+            "patch": p.get("name", p.get("subject", "?")),
+            "hash": p.get("hash", ""),
+            "files": list(patch_files),
+            "overlap": list(overlap),
+            "risk": risk,
+        })
+    return impacts
 
-def agent_cycle(cwd: str, dry_run: bool = False) -> dict:
+
+def analyze_conflict_details(cwd: str) -> list[dict]:
+    """When in a rebase conflict, extract structured conflict info."""
+    conflicts = []
+    try:
+        conflicted = run_git(["diff", "--name-only", "--diff-filter=U"], cwd)
+    except RuntimeError:
+        return conflicts
+
+    for file_path in conflicted.strip().split("\n"):
+        file_path = file_path.strip()
+        if not file_path:
+            continue
+        full_path = os.path.join(cwd, file_path)
+        if not os.path.exists(full_path):
+            continue
+
+        with open(full_path) as f:
+            content = f.read()
+
+        # Extract conflict regions
+        regions = []
+        in_conflict = False
+        ours_lines, theirs_lines = [], []
+        for line in content.split("\n"):
+            if line.startswith("<<<<<<< "):
+                in_conflict = True
+                ours_lines = []
+                theirs_lines = []
+            elif line.startswith("=======") and in_conflict:
+                pass  # switch from ours to theirs
+            elif line.startswith(">>>>>>> ") and in_conflict:
+                regions.append({"ours": "\n".join(ours_lines), "theirs": "\n".join(theirs_lines)})
+                in_conflict = False
+            elif in_conflict:
+                if not any(l.startswith("=======") for l in [line]):
+                    # Before ======= → ours; after → theirs
+                    # Simple heuristic: track state
+                    pass
+
+        # Simpler approach: use regex to extract regions
+        import re
+        for m in re.finditer(r'<<<<<<< [^\n]*\n(.*?)=======\n(.*?)>>>>>>> [^\n]*', content, re.DOTALL):
+            regions.append({"ours": m.group(1).rstrip(), "theirs": m.group(2).rstrip()})
+
+        # Get current patch info
+        patch_name = ""
+        msg_file = os.path.join(cwd, ".git", "rebase-merge", "message")
+        if os.path.exists(msg_file):
+            with open(msg_file) as f:
+                patch_name = f.read().strip().split("\n")[0]
+
+        conflicts.append({
+            "file": file_path,
+            "regions": regions,
+            "region_count": len(regions),
+            "patch": patch_name,
+        })
+
+    return conflicts
+
+
+def llm_explain_changes(upstream_commits: list[dict], impacts: list[dict], model: str) -> str:
+    """Ask LLM to summarize upstream changes and their impact on patches. Pure analysis."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return ""
+
+    system = (
+        "You are a technical analyst for a fork maintenance tool. "
+        "Analyze upstream changes and explain their impact on the user's patches. "
+        "Be concise. Use bullet points. Highlight risks. "
+        "DO NOT suggest code changes — only explain what happened and what the user should consider."
+    )
+
+    upstream_summary = "\n".join(
+        f"  {c['hash']} {c['subject']} ({', '.join(c['files'][:5])}{'...' if len(c['files']) > 5 else ''})"
+        for c in upstream_commits[:20]
+    )
+
+    impact_summary = "\n".join(
+        f"  [{i['risk'].upper()}] patch '{i['patch']}' — overlap: {', '.join(i['overlap']) or 'none'}"
+        for i in impacts
+    )
+
+    prompt = f"""Upstream has {len(upstream_commits)} new commit(s):
+{upstream_summary}
+
+Impact on user's patches:
+{impact_summary}
+
+Provide a brief analysis:
+1. What are the key upstream changes? (group by theme)
+2. Which patches are at risk and why?
+3. Should the user sync now or wait? Why?"""
+
+    return call_llm(system, prompt, model)
+
+
+def llm_explain_conflicts(conflicts: list[dict], model: str) -> str:
+    """Ask LLM to explain conflicts and suggest resolution strategies. Does NOT produce code."""
+    if not os.environ.get("ANTHROPIC_API_KEY") or not conflicts:
+        return ""
+
+    system = (
+        "You are a merge conflict advisor. Explain each conflict: what both sides intended, "
+        "why they conflict, and what resolution strategies exist. "
+        "DO NOT write resolved code. Only explain the situation and trade-offs. "
+        "The user will decide how to resolve."
+    )
+
+    conflict_desc = ""
+    for c in conflicts:
+        conflict_desc += f"\nFile: {c['file']} (patch: {c['patch']}, {c['region_count']} conflict region(s))\n"
+        for i, r in enumerate(c["regions"][:3]):  # limit to 3 regions per file
+            conflict_desc += f"  Region {i+1}:\n"
+            conflict_desc += f"    Upstream version:\n      {r['ours'][:300]}\n"
+            conflict_desc += f"    Your patch version:\n      {r['theirs'][:300]}\n"
+
+    prompt = f"""The following merge conflicts occurred during sync:
+{conflict_desc}
+
+For each conflict:
+1. What was upstream trying to do?
+2. What was the patch trying to do?
+3. What are the resolution options? (keep ours / keep theirs / merge both / rewrite patch)
+4. What's your recommendation and why?"""
+
+    return call_llm(system, prompt, model)
+
+# ─── Report Generator ─────────────────────────────────────────────────────────
+
+def generate_report(
+    status: dict,
+    upstream_commits: list[dict],
+    impacts: list[dict],
+    llm_analysis: str,
+    sync_result: dict | None,
+    conflicts: list[dict],
+    llm_conflict_analysis: str,
+) -> str:
+    """Generate a human-readable markdown report."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    behind = status.get("behind", 0)
+    patches = status.get("patches", [])
+
+    report = f"""# pingo-light sync report
+> Generated: {now}
+
+## Fork Status
+
+| | |
+|---|---|
+| Upstream | {status.get('upstream_url', '?')} |
+| Branch | {status.get('upstream_branch', '?')} |
+| Behind | **{behind} commit(s)** |
+| Patches | {status.get('patch_count', 0)} |
+
+"""
+
+    if behind == 0:
+        report += "**Up to date.** No action needed.\n"
+        return report
+
+    # Upstream changes
+    report += "## Upstream Changes\n\n"
+    for c in upstream_commits[:30]:
+        files_str = ", ".join(c["files"][:3])
+        if len(c["files"]) > 3:
+            files_str += f" +{len(c['files'])-3} more"
+        report += f"- `{c['hash']}` {c['subject']} — {files_str}\n"
+    report += "\n"
+
+    # Impact analysis
+    report += "## Patch Impact Analysis\n\n"
+    report += "| Patch | Risk | Overlapping Files |\n|---|---|---|\n"
+    for i in impacts:
+        risk_badge = {"none": "none", "medium": "**MEDIUM**", "high": "**HIGH**"}[i["risk"]]
+        overlap = ", ".join(i["overlap"]) if i["overlap"] else "—"
+        report += f"| {i['patch']} | {risk_badge} | {overlap} |\n"
+    report += "\n"
+
+    # LLM analysis (if available)
+    if llm_analysis:
+        report += "## AI Analysis\n\n"
+        report += llm_analysis + "\n\n"
+
+    # Sync result
+    if sync_result:
+        if sync_result.get("synced"):
+            report += f"## Sync Result\n\n**Synced successfully.** {behind} upstream commit(s) integrated, all patches rebased cleanly.\n\n"
+        elif sync_result.get("conflict"):
+            report += "## Sync Result\n\n**Conflict detected.** Auto-sync aborted. Manual resolution required.\n\n"
+
+            # Conflict details
+            if conflicts:
+                report += "### Conflicts\n\n"
+                for c in conflicts:
+                    report += f"**{c['file']}** (patch: `{c['patch']}`, {c['region_count']} conflict region(s))\n\n"
+                    for j, r in enumerate(c["regions"][:3]):
+                        report += f"<details><summary>Region {j+1}</summary>\n\n"
+                        report += f"```\n<<<<<<< upstream\n{r['ours']}\n=======\n{r['theirs']}\n>>>>>>> your patch\n```\n\n"
+                        report += "</details>\n\n"
+
+            # LLM conflict explanation
+            if llm_conflict_analysis:
+                report += "### AI Conflict Explanation\n\n"
+                report += llm_conflict_analysis + "\n\n"
+
+            report += "### What to Do\n\n"
+            report += "```bash\n"
+            report += "# Option 1: Resolve manually\n"
+            report += "pingo-light sync\n"
+            report += "# Edit conflicted files, then: git add <files> && git rebase --continue\n\n"
+            report += "# Option 2: Skip the conflicting patch\n"
+            report += "# git rebase --skip\n\n"
+            report += "# Option 3: Abort and stay on current version\n"
+            report += "# git rebase --abort\n"
+            report += "```\n"
+
+    # Recommendation
+    any_high = any(i["risk"] == "high" for i in impacts)
+    any_medium = any(i["risk"] == "medium" for i in impacts)
+
+    report += "\n## Recommendation\n\n"
+    if sync_result and sync_result.get("synced"):
+        report += "Sync completed successfully. No action needed.\n"
+    elif any_high:
+        report += ("**Wait before syncing.** High-risk overlap detected. "
+                   "Review the upstream changes above and consider updating your patches first.\n")
+    elif any_medium:
+        report += ("**Sync with caution.** Medium-risk overlap. "
+                   "Run `pingo-light sync --dry-run` to preview, then sync if clean.\n")
+    else:
+        report += "**Safe to sync.** No overlap between your patches and upstream changes.\n"
+
+    return report
+
+# ─── Core Agent Loop ──────────────────────────────────────────────────────────
+
+def agent_cycle(cwd: str, model: str, full_report: bool = False) -> dict:
     """
-    One cycle of the agent loop:
-      1. OBSERVE: check fork status
-      2. THINK:   decide what to do
-      3. ACT:     sync, resolve conflicts, report
-      4. OBSERVE: verify result
+    Agent cycle:
+      1. OBSERVE:  check status
+      2. ANALYZE:  understand upstream changes + impact
+      3. SAFE-ACT: sync if no conflict risk
+      4. REPORT:   generate analysis when conflicts exist or report requested
     """
     state = load_state(cwd)
-    result = {"action": "none", "success": True, "details": ""}
+    state["last_check"] = datetime.now(timezone.utc).isoformat()
 
     # ── 1. OBSERVE ────────────────────────────────────────────────────────
     log("OBSERVE: checking fork status...")
     status = run_pingo(["status"], cwd)
 
     if not status.get("ok"):
-        log(f"  ERROR: {status}")
-        result = {"action": "error", "success": False, "details": f"Status check failed: {status}"}
-        state["errors"].append({"time": datetime.now(timezone.utc).isoformat(), "error": result["details"]})
         save_state(cwd, state)
-        return result
+        return {"action": "error", "success": False, "details": f"Status failed: {status}"}
 
     behind = status.get("behind", 0)
     patch_count = status.get("patch_count", 0)
     conflict_risk = status.get("conflict_risk", [])
-    up_to_date = status.get("up_to_date", True)
 
-    log(f"  behind: {behind}, patches: {patch_count}, conflict_risk: {len(conflict_risk)} file(s)")
+    log(f"  behind={behind} patches={patch_count} risk_files={len(conflict_risk)}")
 
-    state["last_check"] = datetime.now(timezone.utc).isoformat()
-
-    # ── 2. THINK ──────────────────────────────────────────────────────────
-    if up_to_date:
-        log("THINK: already up to date. Nothing to do.")
-        result = {"action": "none", "success": True, "details": "Already up to date."}
+    if behind == 0:
+        log("UP TO DATE. Nothing to do.")
+        report = generate_report(status, [], [], "", None, [], "")
         save_state(cwd, state)
-        return result
+        return {"action": "none", "success": True, "details": "Up to date.", "report": report}
 
-    if patch_count == 0:
-        log("THINK: behind upstream but no patches. Fast-forward sync.")
-        action = "sync"
-    elif len(conflict_risk) == 0:
-        log("THINK: behind upstream, no conflict risk. Safe to sync.")
-        action = "sync"
-    else:
-        log(f"THINK: behind upstream, conflict risk in {conflict_risk}. Will attempt sync with conflict resolution.")
-        action = "sync_with_resolve"
+    # ── 2. ANALYZE ────────────────────────────────────────────────────────
+    log("ANALYZE: examining upstream changes...")
 
-    if dry_run:
-        log(f"DRY RUN: would {action}. Stopping here.")
-        result = {"action": action, "success": True, "details": f"Dry run: would {action}", "dry_run": True}
-        save_state(cwd, state)
-        return result
+    tracking = status.get("upstream_branch", "main")
+    upstream_commits = analyze_upstream_changes(cwd, "upstream-tracking", f"upstream/{tracking}")
+    log(f"  {len(upstream_commits)} upstream commit(s)")
 
-    # ── 3. ACT ────────────────────────────────────────────────────────────
-    log(f"ACT: executing {action}...")
-
-    sync_result = run_pingo(["sync"], cwd)
-    sync_ok = sync_result.get("ok", False)
-    sync_raw = sync_result.get("raw_output", "")
-
-    if sync_ok or "Sync complete" in sync_raw or "up to date" in sync_raw.lower():
-        log("  sync succeeded cleanly!")
-        state["last_sync"] = datetime.now(timezone.utc).isoformat()
-        state["sync_count"] = state.get("sync_count", 0) + 1
-        save_state(cwd, state)
-        result = {"action": "sync", "success": True, "details": f"Synced {behind} upstream commit(s), {patch_count} patch(es) rebased."}
-        return result
-
-    # Sync failed — likely conflict. Try to resolve.
-    log("  sync hit conflict. Attempting LLM-assisted resolution...")
-    resolve_result = resolve_conflicts_with_llm(cwd)
-
-    if resolve_result["success"]:
-        log("  conflicts resolved by LLM!")
-        state["last_sync"] = datetime.now(timezone.utc).isoformat()
-        state["sync_count"] = state.get("sync_count", 0) + 1
-        state["conflict_resolutions"] = state.get("conflict_resolutions", 0) + 1
-        save_state(cwd, state)
-        result = {"action": "sync_with_resolve", "success": True, "details": resolve_result["details"]}
-        return result
-    else:
-        log(f"  LLM could not resolve: {resolve_result['details']}")
-        # Abort the rebase to leave repo clean
+    # Get detailed patch file lists for impact analysis
+    patches_detail = []
+    for p in status.get("patches", []):
         try:
-            run_git(["rebase", "--abort"], cwd)
+            files = run_git(["diff-tree", "--no-commit-id", "-r", "--name-only", p["hash"]], cwd).split("\n")
         except RuntimeError:
+            files = []
+        patches_detail.append({**p, "files_list": [f for f in files if f]})
+
+    impacts = analyze_patch_impact(cwd, upstream_commits, patches_detail)
+    any_risk = any(i["risk"] != "none" for i in impacts)
+
+    log(f"  impact: {sum(1 for i in impacts if i['risk']!='none')} patch(es) at risk")
+
+    # LLM analysis (optional, graceful degradation)
+    llm_analysis = ""
+    if full_report or any_risk:
+        log("  requesting AI analysis...")
+        llm_analysis = llm_explain_changes(upstream_commits, impacts, model)
+
+    # ── 3. DECIDE + ACT ──────────────────────────────────────────────────
+
+    sync_result = None
+    conflicts = []
+    llm_conflict_analysis = ""
+
+    if not any_risk and not full_report:
+        # SAFE: no overlap, auto-sync
+        log("SAFE-ACT: no conflict risk, syncing...")
+        pingo_result = run_pingo(["sync"], cwd)
+        raw = pingo_result.get("raw", "")
+
+        if pingo_result.get("ok") or "Sync complete" in raw or "up to date" in raw.lower():
+            log("  synced successfully!")
+            state["last_sync"] = datetime.now(timezone.utc).isoformat()
+            state["sync_count"] = state.get("sync_count", 0) + 1
+            sync_result = {"synced": True}
+        else:
+            # Unexpected conflict despite no overlap prediction — analyze and abort
+            log("  unexpected conflict during sync!")
+            conflicts = analyze_conflict_details(cwd)
+            llm_conflict_analysis = llm_explain_conflicts(conflicts, model)
+            try:
+                run_git(["rebase", "--abort"], cwd)
+            except RuntimeError:
+                pass
+            sync_result = {"conflict": True}
+
+    elif any_risk and not full_report:
+        # RISKY: try dry-run first
+        log("CAUTION: overlap detected, testing with dry-run...")
+        dry_result = run_pingo(["sync", "--dry-run"], cwd)
+        dry_raw = dry_result.get("raw", "")
+
+        if "succeed cleanly" in dry_raw.lower():
+            # Dry-run passed! Safe to sync despite overlap
+            log("  dry-run clean, syncing...")
+            pingo_result = run_pingo(["sync"], cwd)
+            raw = pingo_result.get("raw", "")
+            if pingo_result.get("ok") or "Sync complete" in raw:
+                state["last_sync"] = datetime.now(timezone.utc).isoformat()
+                state["sync_count"] = state.get("sync_count", 0) + 1
+                sync_result = {"synced": True}
+            else:
+                conflicts = analyze_conflict_details(cwd)
+                llm_conflict_analysis = llm_explain_conflicts(conflicts, model)
+                try:
+                    run_git(["rebase", "--abort"], cwd)
+                except RuntimeError:
+                    pass
+                sync_result = {"conflict": True}
+        else:
+            # Dry-run confirms conflict — DO NOT sync, just report
+            log("  dry-run confirms conflict. Will NOT sync. Generating report...")
+
+            # Temporarily sync to get real conflict details, then abort
+            pingo_result = run_pingo(["sync"], cwd)
+            conflicts = analyze_conflict_details(cwd)
+            llm_conflict_analysis = llm_explain_conflicts(conflicts, model)
+            try:
+                run_git(["rebase", "--abort"], cwd)
+            except RuntimeError:
+                pass
+            sync_result = {"conflict": True}
+
+    # ── 4. REPORT ─────────────────────────────────────────────────────────
+    log("REPORT: generating analysis...")
+
+    report = generate_report(
+        status, upstream_commits, impacts, llm_analysis,
+        sync_result, conflicts, llm_conflict_analysis,
+    )
+
+    # Write report to file
+    report_path = os.path.join(cwd, REPORT_FILE)
+    with open(report_path, "w") as f:
+        f.write(report)
+    log(f"  report saved to {REPORT_FILE}")
+
+    save_state(cwd, state)
+
+    synced = sync_result and sync_result.get("synced", False)
+    has_conflict = sync_result and sync_result.get("conflict", False)
+
+    if synced:
+        return {"action": "synced", "success": True, "details": f"Synced {behind} commit(s), {patch_count} patch(es) rebased.", "report": report}
+    elif has_conflict:
+        state["reports"] = state.get("reports", 0) + 1
+        save_state(cwd, state)
+        return {"action": "conflict_report", "success": True, "details": f"Conflict detected. Report saved to {REPORT_FILE}", "report": report}
+    else:
+        return {"action": "report", "success": True, "details": "Analysis complete.", "report": report}
+
+
+# ─── Notification ─────────────────────────────────────────────────────────────
+
+def notify(cwd: str, result: dict):
+    """Print result. Create GitHub Issue only for conflicts that need attention."""
+    action = result.get("action", "")
+    details = result.get("details", "")
+
+    if action == "synced":
+        log(f"DONE: {details}")
+    elif action == "conflict_report":
+        log(f"ATTENTION: {details}")
+        log("  Review the report and resolve manually when ready.")
+        # Try GitHub Issue for visibility
+        try:
+            title = f"[pingo-light] Upstream sync needs attention ({datetime.now().strftime('%Y-%m-%d')})"
+            body = result.get("report", details)
+            subprocess.run(
+                ["gh", "issue", "create", "--title", title, "--body", body, "--label", "pingo-light,sync-conflict"],
+                cwd=cwd, capture_output=True, text=True, timeout=30,
+            )
+            log("  GitHub Issue created for visibility.")
+        except Exception:
             pass
-        state["errors"].append({"time": datetime.now(timezone.utc).isoformat(), "error": resolve_result["details"]})
-        save_state(cwd, state)
-        result = {"action": "sync_with_resolve", "success": False, "details": resolve_result["details"]}
-        return result
+    elif action == "none":
+        log(f"DONE: {details}")
+    elif action == "error":
+        log(f"ERROR: {details}")
+    else:
+        log(f"DONE: {details}")
 
 
-def resolve_conflicts_with_llm(cwd: str, max_rounds: int = 5) -> dict:
-    """
-    LLM-powered conflict resolution loop.
-    Iterates: analyze conflict → ask LLM → write resolution → continue rebase.
-    Up to max_rounds to handle multi-patch conflicts.
-    """
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return {"success": False, "details": "No ANTHROPIC_API_KEY set. Cannot resolve conflicts automatically."}
-
-    resolved_count = 0
-
-    for round_num in range(1, max_rounds + 1):
-        log(f"  resolution round {round_num}/{max_rounds}...")
-
-        # Check if we're still in a rebase
-        rebase_dir = os.path.join(cwd, ".git", "rebase-merge")
-        rebase_apply = os.path.join(cwd, ".git", "rebase-apply")
-        if not os.path.isdir(rebase_dir) and not os.path.isdir(rebase_apply):
-            log("  rebase complete!")
-            return {"success": True, "details": f"Resolved {resolved_count} conflict(s) via LLM."}
-
-        # Find conflicted files
-        try:
-            conflicted = run_git(["diff", "--name-only", "--diff-filter=U"], cwd)
-        except RuntimeError:
-            conflicted = ""
-
-        if not conflicted.strip():
-            # No conflicts but still in rebase — try to continue
-            try:
-                result = subprocess.run(
-                    ["git", "rebase", "--continue"], cwd=cwd,
-                    capture_output=True, text=True, timeout=30,
-                    env={**os.environ, "GIT_EDITOR": "true"},
-                )
-                if result.returncode == 0:
-                    continue  # Check next round
-                else:
-                    return {"success": False, "details": f"rebase --continue failed: {result.stderr.strip()}"}
-            except Exception as e:
-                return {"success": False, "details": str(e)}
-
-        # For each conflicted file, ask LLM to resolve
-        for file_path in conflicted.strip().split("\n"):
-            file_path = file_path.strip()
-            if not file_path:
-                continue
-
-            full_path = os.path.join(cwd, file_path)
-            if not os.path.exists(full_path):
-                continue
-
-            with open(full_path) as f:
-                content = f.read()
-
-            if "<<<<<<< " not in content:
-                # Already resolved (maybe by rerere)
-                run_git(["add", file_path], cwd)
-                continue
-
-            log(f"    resolving: {file_path}")
-
-            # Get context: what patch is being applied?
-            patch_info = ""
-            msg_file = os.path.join(cwd, ".git", "rebase-merge", "message")
-            if os.path.exists(msg_file):
-                with open(msg_file) as f:
-                    patch_info = f.read().strip()
-
-            # Ask LLM to resolve
-            system_prompt = (
-                "You are a code merge conflict resolver. You receive a file with git conflict markers "
-                "(<<<<<<< HEAD / ======= / >>>>>>>). Your job is to produce the RESOLVED file content "
-                "with all conflict markers removed. Choose the best resolution that preserves both "
-                "the upstream changes and the patch's intent. Output ONLY the resolved file content, "
-                "nothing else — no markdown fences, no explanation."
-            )
-
-            user_prompt = f"""Resolve the merge conflicts in this file.
-
-Patch being applied: {patch_info}
-File: {file_path}
-
-Content with conflict markers:
-{content}"""
-
-            try:
-                resolved_content = call_llm(system_prompt, user_prompt)
-            except Exception as e:
-                return {"success": False, "details": f"LLM call failed for {file_path}: {e}"}
-
-            # Sanity check: LLM output should not contain conflict markers
-            if "<<<<<<< " in resolved_content or "=======" in resolved_content:
-                return {"success": False, "details": f"LLM produced output with conflict markers for {file_path}"}
-
-            # Write resolved content
-            with open(full_path, "w") as f:
-                f.write(resolved_content)
-
-            run_git(["add", file_path], cwd)
-            resolved_count += 1
-            log(f"    resolved: {file_path}")
-
-        # Continue rebase after resolving all files in this round
-        try:
-            result = subprocess.run(
-                ["git", "rebase", "--continue"], cwd=cwd,
-                capture_output=True, text=True, timeout=30,
-                env={**os.environ, "GIT_EDITOR": "true"},
-            )
-            if result.returncode != 0 and "CONFLICT" in result.stderr:
-                continue  # More conflicts in next patch, loop again
-            elif result.returncode != 0:
-                return {"success": False, "details": f"rebase --continue failed: {result.stderr.strip()}"}
-        except Exception as e:
-            return {"success": False, "details": str(e)}
-
-    return {"success": False, "details": f"Max resolution rounds ({max_rounds}) exceeded."}
-
-# ─── Reporting ────────────────────────────────────────────────────────────────
-
-def report_result(cwd: str, result: dict):
-    """Report agent action result. Creates GitHub Issue on failure if gh is available."""
-    if result["success"]:
-        log(f"RESULT: {result['details']}")
-        return
-
-    log(f"RESULT (FAILED): {result['details']}")
-
-    # Try to create GitHub Issue
-    gh = subprocess.run(["gh", "--version"], capture_output=True)
-    if gh.returncode != 0:
-        return
-
-    title = f"[pingo-light-agent] Sync failed ({datetime.now().strftime('%Y-%m-%d')})"
-    body = f"""## Auto-sync failed
-
-**Action:** {result['action']}
-**Details:** {result['details']}
-**Time:** {datetime.now(timezone.utc).isoformat()}
-
-Manual intervention required. Run `pingo-light sync` locally to resolve.
-
----
-*This issue was created by pingo-light agent.*"""
-
-    try:
-        subprocess.run(
-            ["gh", "issue", "create", "--title", title, "--body", body, "--label", "pingo-light"],
-            cwd=cwd, capture_output=True, text=True, timeout=30,
-        )
-        log("  created GitHub Issue for failed sync.")
-    except Exception:
-        pass
-
-# ─── Daemon Mode ──────────────────────────────────────────────────────────────
+# ─── Watch Mode ───────────────────────────────────────────────────────────────
 
 def parse_interval(s: str) -> int:
-    """Parse interval string like '6h', '30m', '1d' to seconds."""
     s = s.strip().lower()
-    if s.endswith("h"):
-        return int(s[:-1]) * 3600
-    elif s.endswith("m"):
-        return int(s[:-1]) * 60
-    elif s.endswith("d"):
-        return int(s[:-1]) * 86400
-    elif s.endswith("s"):
-        return int(s[:-1])
-    else:
-        return int(s)  # assume seconds
+    if s.endswith("h"):   return int(s[:-1]) * 3600
+    elif s.endswith("m"): return int(s[:-1]) * 60
+    elif s.endswith("d"): return int(s[:-1]) * 86400
+    else: return int(s)
 
 
-def daemon_loop(cwd: str, interval: int, dry_run: bool = False):
-    """Run agent cycle on a schedule."""
-    log(f"DAEMON: starting (interval={interval}s, cwd={cwd})")
+def watch_loop(cwd: str, interval: int, model: str):
+    """Periodic monitoring. NOT a daemon — just a scheduled check loop."""
+    log(f"WATCH: monitoring every {interval}s")
     while True:
         try:
-            result = agent_cycle(cwd, dry_run=dry_run)
-            report_result(cwd, result)
+            result = agent_cycle(cwd, model)
+            notify(cwd, result)
         except KeyboardInterrupt:
-            log("DAEMON: interrupted, stopping.")
             break
         except Exception as e:
-            log(f"DAEMON: unhandled error: {e}")
+            log(f"ERROR: {e}")
             traceback.print_exc()
-
-        log(f"DAEMON: sleeping {interval}s until next check...")
         try:
             time.sleep(interval)
         except KeyboardInterrupt:
-            log("DAEMON: interrupted, stopping.")
             break
+    log("WATCH: stopped.")
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
-        description="pingo-light agent — Autonomous fork maintenance powered by LLM.",
+        description="pingo-light agent — Intelligent fork maintenance advisor.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Behavior:
+  Default     Check upstream. Sync if safe. Report if conflict.
+  --report    Full analysis report (even if up-to-date).
+  --watch     Periodic monitoring loop.
+
+The agent NEVER auto-resolves conflicts or auto-pushes code.
+Conflicts generate a detailed report for human review.
+
 Examples:
-  # One-shot sync check
   python3 agent.py --cwd /path/to/repo
-
-  # Dry run (see what would happen)
-  python3 agent.py --cwd /path/to/repo --dry-run
-
-  # Daemon mode (check every 6 hours)
-  python3 agent.py --cwd /path/to/repo --daemon --interval 6h
-
-  # With specific model
-  python3 agent.py --cwd /path/to/repo --model claude-haiku-4-20250414
+  python3 agent.py --cwd /path/to/repo --report
+  python3 agent.py --cwd /path/to/repo --watch --interval 6h
 
 Environment:
-  ANTHROPIC_API_KEY  Required for LLM conflict resolution
-  GITHUB_TOKEN       Optional, for creating Issues on failure
-  PINGO_LIGHT_BIN    Override path to pingo-light binary
+  ANTHROPIC_API_KEY  Optional. Enables AI-powered analysis (richer reports).
+                     Without it, agent still works — just less insightful.
 """,
     )
-    parser.add_argument("--cwd", required=True, help="Path to the git repository")
-    parser.add_argument("--dry-run", action="store_true", help="Preview actions without executing")
-    parser.add_argument("--daemon", action="store_true", help="Run continuously on a schedule")
-    parser.add_argument("--interval", default="6h", help="Check interval for daemon mode (default: 6h)")
-    parser.add_argument("--model", default="claude-sonnet-4-20250514", help="Claude model for conflict resolution")
-    parser.add_argument("--json-log", action="store_true", help="Output structured JSON logs")
-    parser.add_argument("--quiet", action="store_true", help="Suppress human-readable output")
+    parser.add_argument("--cwd", required=True, help="Path to the git repo")
+    parser.add_argument("--report", action="store_true", help="Generate full analysis report")
+    parser.add_argument("--watch", action="store_true", help="Periodic monitoring loop")
+    parser.add_argument("--interval", default="6h", help="Watch interval (default: 6h)")
+    parser.add_argument("--model", default="claude-sonnet-4-20250514", help="Claude model for analysis")
+    parser.add_argument("--quiet", action="store_true", help="Suppress log output")
+    parser.add_argument("--json", action="store_true", help="Output result as JSON")
 
     args = parser.parse_args()
-
     global QUIET
     QUIET = args.quiet
 
@@ -486,17 +640,18 @@ Environment:
         print(f"Error: {cwd} is not a git repository.", file=sys.stderr)
         sys.exit(1)
 
-    if args.daemon:
-        interval = parse_interval(args.interval)
-        daemon_loop(cwd, interval, dry_run=args.dry_run)
+    if args.watch:
+        watch_loop(cwd, parse_interval(args.interval), args.model)
     else:
-        result = agent_cycle(cwd, dry_run=args.dry_run)
-        report_result(cwd, result)
+        result = agent_cycle(cwd, args.model, full_report=args.report)
+        notify(cwd, result)
 
-        if args.json_log:
-            print(json.dumps(result))
+        if args.json:
+            # Output machine-readable result (without report to save space)
+            out = {k: v for k, v in result.items() if k != "report"}
+            print(json.dumps(out))
 
-        sys.exit(0 if result["success"] else 1)
+        sys.exit(0 if result.get("success") else 1)
 
 
 if __name__ == "__main__":
