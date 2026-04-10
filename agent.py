@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pingo-light agent — Intelligent fork maintenance advisor.
+bingo-light agent — Intelligent fork maintenance advisor.
 
 Monitors upstream, auto-syncs when safe, analyzes and explains conflicts
 when not. The agent NEVER auto-resolves conflicts or auto-pushes code.
@@ -31,17 +31,17 @@ from pathlib import Path
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
-PINGO_BIN = os.environ.get("PINGO_LIGHT_BIN", str(Path(__file__).parent / "pingo-light"))
-STATE_FILE = ".pingo-agent-state.json"
-REPORT_FILE = ".pingo-report.md"
+BINGO_BIN = os.environ.get("BINGO_LIGHT_BIN", str(Path(__file__).parent / "bingo-light"))
+STATE_FILE = ".bingo-agent-state.json"
+REPORT_FILE = ".bingo-report.md"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2
 
 # ─── Infra: CLI + Git + LLM ──────────────────────────────────────────────────
 
 def run_pingo(args: list[str], cwd: str) -> dict:
-    """Run pingo-light with --json --yes and return parsed result."""
-    cmd = [PINGO_BIN, "--json", "--yes"] + args
+    """Run bingo-light with --json --yes and return parsed result."""
+    cmd = [BINGO_BIN, "--json", "--yes"] + args
     env = {**os.environ, "NO_COLOR": "1"}
     result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=120, env=env)
     stdout = result.stdout.strip()
@@ -274,7 +274,7 @@ def generate_report(
     behind = status.get("behind", 0)
     patches = status.get("patches", [])
 
-    report = f"""# pingo-light sync report
+    report = f"""# bingo-light sync report
 > Generated: {now}
 
 ## Fork Status
@@ -340,7 +340,7 @@ def generate_report(
             report += "### What to Do\n\n"
             report += "```bash\n"
             report += "# Option 1: Resolve manually\n"
-            report += "pingo-light sync\n"
+            report += "bingo-light sync\n"
             report += "# Edit conflicted files, then: git add <files> && git rebase --continue\n\n"
             report += "# Option 2: Skip the conflicting patch\n"
             report += "# git rebase --skip\n\n"
@@ -360,7 +360,7 @@ def generate_report(
                    "Review the upstream changes above and consider updating your patches first.\n")
     elif any_medium:
         report += ("**Sync with caution.** Medium-risk overlap. "
-                   "Run `pingo-light sync --dry-run` to preview, then sync if clean.\n")
+                   "Run `bingo-light sync --dry-run` to preview, then sync if clean.\n")
     else:
         report += "**Safe to sync.** No overlap between your patches and upstream changes.\n"
 
@@ -435,10 +435,10 @@ def agent_cycle(cwd: str, model: str, full_report: bool = False) -> dict:
     if not any_risk and not full_report:
         # SAFE: no overlap, auto-sync
         log("SAFE-ACT: no conflict risk, syncing...")
-        pingo_result = run_pingo(["sync"], cwd)
-        raw = pingo_result.get("raw", "")
+        bingo_result = run_pingo(["sync"], cwd)
+        raw = bingo_result.get("raw", "")
 
-        if pingo_result.get("ok") or "Sync complete" in raw or "up to date" in raw.lower():
+        if bingo_result.get("ok") or "Sync complete" in raw or "up to date" in raw.lower():
             log("  synced successfully!")
             state["last_sync"] = datetime.now(timezone.utc).isoformat()
             state["sync_count"] = state.get("sync_count", 0) + 1
@@ -463,9 +463,9 @@ def agent_cycle(cwd: str, model: str, full_report: bool = False) -> dict:
         if "succeed cleanly" in dry_raw.lower():
             # Dry-run passed! Safe to sync despite overlap
             log("  dry-run clean, syncing...")
-            pingo_result = run_pingo(["sync"], cwd)
-            raw = pingo_result.get("raw", "")
-            if pingo_result.get("ok") or "Sync complete" in raw:
+            bingo_result = run_pingo(["sync"], cwd)
+            raw = bingo_result.get("raw", "")
+            if bingo_result.get("ok") or "Sync complete" in raw:
                 state["last_sync"] = datetime.now(timezone.utc).isoformat()
                 state["sync_count"] = state.get("sync_count", 0) + 1
                 sync_result = {"synced": True}
@@ -482,7 +482,7 @@ def agent_cycle(cwd: str, model: str, full_report: bool = False) -> dict:
             log("  dry-run confirms conflict. Will NOT sync. Generating report...")
 
             # Temporarily sync to get real conflict details, then abort
-            pingo_result = run_pingo(["sync"], cwd)
+            bingo_result = run_pingo(["sync"], cwd)
             conflicts = analyze_conflict_details(cwd)
             llm_conflict_analysis = llm_explain_conflicts(conflicts, model)
             try:
@@ -534,10 +534,10 @@ def notify(cwd: str, result: dict):
         log("  Review the report and resolve manually when ready.")
         # Try GitHub Issue for visibility
         try:
-            title = f"[pingo-light] Upstream sync needs attention ({datetime.now().strftime('%Y-%m-%d')})"
+            title = f"[bingo-light] Upstream sync needs attention ({datetime.now().strftime('%Y-%m-%d')})"
             body = result.get("report", details)
             subprocess.run(
-                ["gh", "issue", "create", "--title", title, "--body", body, "--label", "pingo-light,sync-conflict"],
+                ["gh", "issue", "create", "--title", title, "--body", body, "--label", "bingo-light,sync-conflict"],
                 cwd=cwd, capture_output=True, text=True, timeout=30,
             )
             log("  GitHub Issue created for visibility.")
@@ -583,7 +583,7 @@ def watch_loop(cwd: str, interval: int, model: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="pingo-light agent — Intelligent fork maintenance advisor.",
+        description="bingo-light agent — Intelligent fork maintenance advisor.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Behavior:

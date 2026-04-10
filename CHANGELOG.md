@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
-- Initial release of pingo-light.
+- Initial release of bingo-light.
 - Sync a fork with its upstream repository.
 - Detect and list diverged branches.
 - Rebase or merge workflow support.

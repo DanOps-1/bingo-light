@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-pingo-light TUI — Terminal dashboard for fork maintenance.
+bingo-light TUI — Terminal dashboard for fork maintenance.
 
-Reads status from pingo-light --json and displays a real-time overview.
+Reads status from bingo-light --json and displays a real-time overview.
 Supports both single-repo and workspace (multi-repo) modes.
 
 Usage:
@@ -23,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-PINGO = os.environ.get("PINGO_LIGHT_BIN", str(Path(__file__).parent / "pingo-light"))
+PINGO = os.environ.get("BINGO_LIGHT_BIN", str(Path(__file__).parent / "bingo-light"))
 
 
 def run_pingo(args, cwd="."):
@@ -39,7 +39,7 @@ def run_pingo(args, cwd="."):
 
 
 def get_workspace_repos():
-    config = os.path.expanduser("~/.config/pingo-light/workspace.json")
+    config = os.path.expanduser("~/.config/bingo-light/workspace.json")
     if not os.path.exists(config):
         return []
     with open(config) as f:
@@ -127,7 +127,7 @@ def main(stdscr):
         stdscr.clear()
         height, width = stdscr.getmaxyx()
 
-        draw_header(stdscr, 0, "pingo-light TUI", width)
+        draw_header(stdscr, 0, "bingo-light TUI", width)
         stdscr.addnstr(1, 0, "─" * width, width)
 
         y = 3

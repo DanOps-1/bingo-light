@@ -1,4 +1,4 @@
-# pingo-light
+# bingo-light
 
 > Dead-simple fork maintenance CLI. Manages customizations as a clean patch stack on top of upstream open-source projects.
 
@@ -6,7 +6,7 @@ Single-file bash tool. Zero dependencies beyond git + bash.
 
 ## Problem it solves
 
-When you fork an open-source project and add your own features, syncing with upstream becomes painful: merge conflicts, lost customizations, hours of manual review. pingo-light turns this into a one-command operation by organizing your changes as an ordered patch stack that gets cleanly rebased onto upstream updates.
+When you fork an open-source project and add your own features, syncing with upstream becomes painful: merge conflicts, lost customizations, hours of manual review. bingo-light turns this into a one-command operation by organizing your changes as an ordered patch stack that gets cleanly rebased onto upstream updates.
 
 ## Mental model
 
@@ -14,28 +14,28 @@ When you fork an open-source project and add your own features, syncing with ups
 upstream-tracking   (mirrors upstream exactly, never touched by user)
        |
        v
-  pingo-patches     (user's branch: patch stack on top of upstream)
+  bingo-patches     (user's branch: patch stack on top of upstream)
        |
-       +-- [pl] feature-a: description  (commit 1 = patch 1)
-       +-- [pl] feature-b: description  (commit 2 = patch 2)
-       +-- [pl] fix-c: description      (commit 3 = patch 3)
+       +-- [bl] feature-a: description  (commit 1 = patch 1)
+       +-- [bl] feature-b: description  (commit 2 = patch 2)
+       +-- [bl] fix-c: description      (commit 3 = patch 3)
 ```
 
-Each patch = one git commit with prefix `[pl]`. Syncing = fetch upstream + rebase the patch stack. git rerere is auto-enabled to remember conflict resolutions.
+Each patch = one git commit with prefix `[bl]`. Syncing = fetch upstream + rebase the patch stack. git rerere is auto-enabled to remember conflict resolutions.
 
 ## Installation
 
 ```bash
-cp pingo-light /usr/local/bin/    # or: ./install.sh
+cp bingo-light /usr/local/bin/    # or: ./install.sh
 ```
 
 ## Complete command reference
 
-### pingo-light init <upstream-url> [branch]
+### bingo-light init <upstream-url> [branch]
 
-Initialize pingo-light in a git repository. Sets up upstream remote, creates tracking branch (mirrors upstream) and patches branch (where user's changes go). Auto-detects upstream default branch. Enables git rerere. If current branch has commits ahead of upstream, offers to adopt them as the initial patch stack.
+Initialize bingo-light in a git repository. Sets up upstream remote, creates tracking branch (mirrors upstream) and patches branch (where user's changes go). Auto-detects upstream default branch. Enables git rerere. If current branch has commits ahead of upstream, offers to adopt them as the initial patch stack.
 
-Creates `.pingolight` config file in repo root.
+Creates `.bingolight` config file in repo root.
 
 **Arguments:**
 - `upstream-url` (required): URL of the original upstream repository
@@ -44,53 +44,53 @@ Creates `.pingolight` config file in repo root.
 **Example:**
 ```bash
 cd my-forked-project
-pingo-light init https://github.com/original/project.git
-pingo-light init https://github.com/original/project.git develop
+bingo-light init https://github.com/original/project.git
+bingo-light init https://github.com/original/project.git develop
 ```
 
-### pingo-light patch new <name>
+### bingo-light patch new <name>
 
 Create a new patch from current changes. If changes are staged, only staged changes are used. If nothing is staged, all modifications + untracked files are staged automatically. Prompts for an optional one-line description.
 
 Patch names must be alphanumeric with hyphens/underscores, starting with a letter or number. Duplicate names are rejected.
 
-Must be on the pingo-patches branch (auto-switches if not).
+Must be on the bingo-patches branch (auto-switches if not).
 
 **Example:**
 ```bash
 vim src/feature.py
-pingo-light patch new add-dark-mode
+bingo-light patch new add-dark-mode
 ```
 
-### pingo-light patch list [-v]
+### bingo-light patch list [-v]
 
 List all patches in the stack, bottom-first (first applied = first listed). Shows patch name, short hash, and change stats. With `-v`, also shows per-file changes (A/M/D).
 
-### pingo-light patch show <name|index>
+### bingo-light patch show <name|index>
 
 Show full diff and stats for a specific patch. Accepts patch name or 1-based numeric index from `patch list`.
 
-### pingo-light patch edit <name|index>
+### bingo-light patch edit <name|index>
 
 Amend an existing patch. Stage your fixes first (`git add`), then run this. Uses git fixup + autosquash rebase internally.
 
-### pingo-light patch drop <name|index>
+### bingo-light patch drop <name|index>
 
 Remove a patch from the stack. Confirms before acting. Uses rebase internally, may fail if later patches depend on the dropped one.
 
-### pingo-light patch export [dir]
+### bingo-light patch export [dir]
 
 Export all patches as numbered `.patch` files (git format-patch) plus a `series` file (quilt-compatible). Default output directory: `.pl-patches/`.
 
-### pingo-light patch import <file|dir>
+### bingo-light patch import <file|dir>
 
 Import `.patch` file(s) into the stack via `git am`. If given a directory, reads `series` file for ordering, falls back to alphabetical.
 
-### pingo-light patch reorder
+### bingo-light patch reorder
 
 Open interactive rebase editor to reorder, squash, or drop patches. Uses `$EDITOR` (default: vi).
 
-### pingo-light sync [--dry-run|-n] [--force|-f]
+### bingo-light sync [--dry-run|-n] [--force|-f]
 
 Sync with upstream. Fetches upstream, updates tracking branch, rebases all patches onto new upstream HEAD.
 
@@ -102,11 +102,11 @@ Sync with upstream. Fetches upstream, updates tracking branch, rebases all patch
 
 **On success:** Reports clean rebase, shows sync status.
 
-### pingo-light undo
+### bingo-light undo
 
 Undo the last sync operation by restoring the patches branch to its previous reflog state. Confirms before acting.
 
-### pingo-light status
+### bingo-light status
 
 Comprehensive health check:
 - Shows upstream URL, branch, current branch
@@ -115,7 +115,7 @@ Comprehensive health check:
 - **Conflict prediction**: detects files changed by both your patches and upstream, warns about potential conflicts before you sync
 - Shows rerere resolution count
 
-### pingo-light doctor
+### bingo-light doctor
 
 Diagnostic check:
 - git version
@@ -125,39 +125,39 @@ Diagnostic check:
 - Tests whether all patches apply cleanly on latest upstream (via temporary rebase)
 - Config file present
 
-### pingo-light diff
+### bingo-light diff
 
 Show combined diff of all patches vs upstream (what your fork changes overall).
 
-### pingo-light log
+### bingo-light log
 
 Show sync history via tracking branch reflog (last 20 entries).
 
-### pingo-light auto-sync
+### bingo-light auto-sync
 
-Interactive generator for GitHub Actions workflow. Produces `.github/workflows/pingo-light-sync.yml` that:
+Interactive generator for GitHub Actions workflow. Produces `.github/workflows/bingo-light-sync.yml` that:
 - Runs on schedule (daily/6h/weekly, user chooses)
 - Fetches upstream and rebases patches
 - On success: force-pushes rebased branches
-- On conflict: creates a GitHub Issue with `pingo-light` and `sync-conflict` labels
+- On conflict: creates a GitHub Issue with `bingo-light` and `sync-conflict` labels
 
-### pingo-light version
+### bingo-light version
 
 Print version string.
 
-### pingo-light help
+### bingo-light help
 
 Print usage summary with quick-start guide.
 
-## Config file: .pingolight
+## Config file: .bingolight
 
 Git-config format file in repo root. Sections:
 
 ```ini
-[pingolight]
+[bingolight]
     upstream-url = https://github.com/original/project.git
     upstream-branch = main
-    patches-branch = pingo-patches
+    patches-branch = bingo-patches
     tracking-branch = upstream-tracking
 ```
 
@@ -165,17 +165,17 @@ Git-config format file in repo root. Sections:
 
 | Branch | Purpose | Who touches it |
 |--------|---------|----------------|
-| `upstream-tracking` | Exact mirror of upstream HEAD | Only pingo-light (via sync) |
-| `pingo-patches` | User's patch stack on top of tracking | User (via patch commands) + pingo-light (via sync rebase) |
+| `upstream-tracking` | Exact mirror of upstream HEAD | Only bingo-light (via sync) |
+| `bingo-patches` | User's patch stack on top of tracking | User (via patch commands) + bingo-light (via sync rebase) |
 
 ## Commit message format
 
 Patches are identified by commit message prefix:
 ```
-[pl] <patch-name>: <description>
+[bl] <patch-name>: <description>
 ```
 
-Example: `[pl] add-dark-mode: support dark color scheme`
+Example: `[bl] add-dark-mode: support dark color scheme`
 
 ## Typical workflows
 
@@ -183,21 +183,21 @@ Example: `[pl] add-dark-mode: support dark color scheme`
 ```bash
 git clone https://github.com/YOU/forked-project.git
 cd forked-project
-pingo-light init https://github.com/ORIGINAL/project.git
+bingo-light init https://github.com/ORIGINAL/project.git
 # make changes
-pingo-light patch new my-feature
+bingo-light patch new my-feature
 ```
 
 ### Daily sync
 ```bash
-pingo-light status          # check drift
-pingo-light sync --dry-run  # preview
-pingo-light sync            # actual sync
+bingo-light status          # check drift
+bingo-light sync --dry-run  # preview
+bingo-light sync            # actual sync
 ```
 
 ### Conflict resolution
 ```bash
-pingo-light sync
+bingo-light sync
 # if conflict:
 #   1. edit conflicted files
 #   2. git add <files>
@@ -208,21 +208,21 @@ pingo-light sync
 
 ### Oops, sync broke things
 ```bash
-pingo-light undo
+bingo-light undo
 ```
 
 ### Share patches with team
 ```bash
-pingo-light patch export ./patches
+bingo-light patch export ./patches
 # patches/ contains numbered .patch files + series file
 # teammate imports:
-pingo-light patch import ./patches
+bingo-light patch import ./patches
 ```
 
 ### Set up automation
 ```bash
-pingo-light auto-sync
-# commit and push the generated .github/workflows/pingo-light-sync.yml
+bingo-light auto-sync
+# commit and push the generated .github/workflows/bingo-light-sync.yml
 ```
 
 ## Error handling
@@ -230,7 +230,7 @@ pingo-light auto-sync
 | Error | Meaning | Resolution |
 |-------|---------|------------|
 | "Not a git repository" | Run inside a git repo | `cd` to your project |
-| "pingo-light not initialized" | No `.pingolight` config | Run `pingo-light init` |
+| "bingo-light not initialized" | No `.bingolight` config | Run `bingo-light init` |
 | "Working tree is dirty" | Uncommitted changes | Commit or stash first |
 | "Rebase conflict detected" | Upstream changes conflict with a patch | Follow printed guide: edit, `git add`, `git rebase --continue` |
 | "Failed to drop patch" | Other patches depend on it | Reorder patches first, or drop dependents |

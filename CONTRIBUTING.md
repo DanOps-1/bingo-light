@@ -1,10 +1,10 @@
-# Contributing to pingo-light
+# Contributing to bingo-light
 
 Thanks for your interest in contributing! This guide covers everything you need to get started.
 
 ## Reporting Bugs
 
-Open an issue using the **Bug Report** template. Include the pingo-light version, your OS, and steps to reproduce the problem.
+Open an issue using the **Bug Report** template. Include the bingo-light version, your OS, and steps to reproduce the problem.
 
 ## Submitting Changes
 
@@ -23,7 +23,7 @@ make test
 
 ## Code Style
 
-- pingo-light is a single-file Bash tool. Keep it that way.
+- bingo-light is a single-file Bash tool. Keep it that way.
 - All code must pass [ShellCheck](https://www.shellcheck.net/) with zero warnings.
 - Use `snake_case` for variables and functions.
 - Prefer clarity over cleverness.

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-pingo-light MCP Server — Zero-dependency MCP tool server.
+bingo-light MCP Server — Zero-dependency MCP tool server.
 
-Exposes pingo-light CLI commands as MCP tools so any MCP-compatible LLM client
+Exposes bingo-light CLI commands as MCP tools so any MCP-compatible LLM client
 (Claude Code, Claude Desktop, VS Code Copilot, Cursor, etc.) can call them directly.
 
 Protocol: JSON-RPC 2.0 over stdio (MCP specification).
@@ -13,10 +13,10 @@ Usage:
   python3 mcp-server.py
 
   # In Claude Code settings.json:
-  { "mcpServers": { "pingo-light": { "command": "python3", "args": ["/path/to/mcp-server.py"] } } }
+  { "mcpServers": { "bingo-light": { "command": "python3", "args": ["/path/to/mcp-server.py"] } } }
 
   # In Claude Desktop config:
-  { "mcpServers": { "pingo-light": { "command": "python3", "args": ["/path/to/mcp-server.py"] } } }
+  { "mcpServers": { "bingo-light": { "command": "python3", "args": ["/path/to/mcp-server.py"] } } }
 """
 
 import json
@@ -27,11 +27,11 @@ from pathlib import Path
 
 # ─── Tool Definitions ─────────────────────────────────────────────────────────
 
-PINGO = os.environ.get("PINGO_LIGHT_BIN", str(Path(__file__).parent / "pingo-light"))
+PINGO = os.environ.get("BINGO_LIGHT_BIN", str(Path(__file__).parent / "bingo-light"))
 
 TOOLS = [
     {
-        "name": "pingo_status",
+        "name": "bingo_status",
         "description": (
             "Check the health of your fork: how far behind upstream, list all patches, "
             "predict potential conflicts. Run this FIRST to understand the current state."
@@ -48,9 +48,9 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_init",
+        "name": "bingo_init",
         "description": (
-            "Initialize pingo-light in a git repository. Sets up upstream tracking, "
+            "Initialize bingo-light in a git repository. Sets up upstream tracking, "
             "creates patch branch, enables rerere. Run once per forked project."
         ),
         "inputSchema": {
@@ -73,7 +73,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_patch_new",
+        "name": "bingo_patch_new",
         "description": (
             "Create a new patch from current changes. Each patch = one atomic customization "
             "on top of upstream. Stage changes first (git add) or let it auto-stage everything."
@@ -98,7 +98,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_patch_list",
+        "name": "bingo_patch_list",
         "description": "List all patches in the stack with stats. Use verbose=true for per-file details.",
         "inputSchema": {
             "type": "object",
@@ -116,7 +116,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_patch_show",
+        "name": "bingo_patch_show",
         "description": "Show full diff and stats for a specific patch.",
         "inputSchema": {
             "type": "object",
@@ -134,7 +134,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_patch_drop",
+        "name": "bingo_patch_drop",
         "description": "Remove a patch from the stack.",
         "inputSchema": {
             "type": "object",
@@ -152,7 +152,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_patch_export",
+        "name": "bingo_patch_export",
         "description": "Export all patches as numbered .patch files (git format-patch) plus quilt-compatible series file.",
         "inputSchema": {
             "type": "object",
@@ -170,7 +170,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_patch_import",
+        "name": "bingo_patch_import",
         "description": "Import .patch file(s) into the stack.",
         "inputSchema": {
             "type": "object",
@@ -188,7 +188,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_sync",
+        "name": "bingo_sync",
         "description": (
             "Sync with upstream: fetch latest changes and rebase all patches. "
             "Use dry_run=true to preview without making changes."
@@ -209,7 +209,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_undo",
+        "name": "bingo_undo",
         "description": "Undo the last sync operation by restoring patches branch to previous state.",
         "inputSchema": {
             "type": "object",
@@ -223,7 +223,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_doctor",
+        "name": "bingo_doctor",
         "description": (
             "Diagnose setup issues: checks git version, rerere, upstream remote, branch structure, "
             "and tests whether patches apply cleanly on latest upstream."
@@ -240,7 +240,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_diff",
+        "name": "bingo_diff",
         "description": "Show combined diff of all patches vs upstream (total fork divergence).",
         "inputSchema": {
             "type": "object",
@@ -254,10 +254,10 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_auto_sync",
+        "name": "bingo_auto_sync",
         "description": (
             "Generate GitHub Actions workflow for automated daily upstream sync. "
-            "Creates .github/workflows/pingo-light-sync.yml."
+            "Creates .github/workflows/bingo-light-sync.yml."
         ),
         "inputSchema": {
             "type": "object",
@@ -276,11 +276,11 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_conflict_analyze",
+        "name": "bingo_conflict_analyze",
         "description": (
             "Analyze current rebase conflicts. Returns structured info about each conflicted file: "
             "the 'ours' version (upstream), 'theirs' version (your patch), conflict count, and resolution hints. "
-            "Call this when pingo_sync reports a conflict to understand what needs fixing."
+            "Call this when bingo_sync reports a conflict to understand what needs fixing."
         ),
         "inputSchema": {
             "type": "object",
@@ -294,10 +294,10 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_conflict_resolve",
+        "name": "bingo_conflict_resolve",
         "description": (
             "Resolve a conflict during rebase by writing the resolved content to a file, "
-            "staging it, and continuing the rebase. Use after pingo_conflict_analyze."
+            "staging it, and continuing the rebase. Use after bingo_conflict_analyze."
         ),
         "inputSchema": {
             "type": "object",
@@ -319,8 +319,8 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_config",
-        "description": "Get, set, or list pingo-light configuration values.",
+        "name": "bingo_config",
+        "description": "Get, set, or list bingo-light configuration values.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -333,7 +333,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_history",
+        "name": "bingo_history",
         "description": "Show sync history: timestamps, upstream commits integrated, patch hash mappings.",
         "inputSchema": {
             "type": "object",
@@ -342,7 +342,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_test",
+        "name": "bingo_test",
         "description": "Run the configured test command. Set test command first: config set test.command 'make test'.",
         "inputSchema": {
             "type": "object",
@@ -351,7 +351,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_patch_meta",
+        "name": "bingo_patch_meta",
         "description": "Get or set patch metadata (reason, tags, expires, upstream_pr, status).",
         "inputSchema": {
             "type": "object",
@@ -365,7 +365,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_patch_squash",
+        "name": "bingo_patch_squash",
         "description": "Squash two adjacent patches into one.",
         "inputSchema": {
             "type": "object",
@@ -378,7 +378,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_patch_reorder",
+        "name": "bingo_patch_reorder",
         "description": "Reorder patches non-interactively. Provide new order as comma-separated indices.",
         "inputSchema": {
             "type": "object",
@@ -390,7 +390,7 @@ TOOLS = [
         }
     },
     {
-        "name": "pingo_workspace_status",
+        "name": "bingo_workspace_status",
         "description": "Show status of all repos in the workspace (multi-repo overview).",
         "inputSchema": {
             "type": "object",
@@ -405,7 +405,7 @@ TOOLS = [
 # ─── Command Mapping ──────────────────────────────────────────────────────────
 
 def run_pingo(args: list[str], cwd: str, input_text: str = "") -> dict:
-    """Run pingo-light CLI and return structured result."""
+    """Run bingo-light CLI and return structured result."""
     env = os.environ.copy()
     env["NO_COLOR"] = "1"  # Disable ANSI colors for machine-readable output
 
@@ -428,7 +428,7 @@ def run_pingo(args: list[str], cwd: str, input_text: str = "") -> dict:
         }
     except FileNotFoundError:
         return {
-            "content": [{"type": "text", "text": f"pingo-light not found at: {PINGO}\nInstall: cp pingo-light /usr/local/bin/"}],
+            "content": [{"type": "text", "text": f"bingo-light not found at: {PINGO}\nInstall: cp bingo-light /usr/local/bin/"}],
             "isError": True,
         }
     except subprocess.TimeoutExpired:
@@ -439,67 +439,67 @@ def run_pingo(args: list[str], cwd: str, input_text: str = "") -> dict:
 
 
 def handle_tool_call(name: str, arguments: dict) -> dict:
-    """Map MCP tool calls to pingo-light CLI commands."""
+    """Map MCP tool calls to bingo-light CLI commands."""
     cwd = arguments.get("cwd", ".")
 
-    if name == "pingo_status":
+    if name == "bingo_status":
         return run_pingo(["status", "--json"], cwd)
 
-    elif name == "pingo_init":
+    elif name == "bingo_init":
         args = ["init", arguments["upstream_url"]]
         if arguments.get("branch"):
             args.append(arguments["branch"])
         return run_pingo(args, cwd, input_text="\n")  # Accept defaults
 
-    elif name == "pingo_patch_new":
+    elif name == "bingo_patch_new":
         desc = arguments.get("description", "no description")
         return run_pingo(["patch", "new", arguments["name"]], cwd, input_text=f"{desc}\n")
 
-    elif name == "pingo_patch_list":
+    elif name == "bingo_patch_list":
         args = ["patch", "list"]
         if arguments.get("verbose"):
             args.append("-v")
         return run_pingo(args, cwd)
 
-    elif name == "pingo_patch_show":
+    elif name == "bingo_patch_show":
         return run_pingo(["patch", "show", arguments["target"]], cwd)
 
-    elif name == "pingo_patch_drop":
+    elif name == "bingo_patch_drop":
         return run_pingo(["patch", "drop", arguments["target"]], cwd, input_text="y\n")
 
-    elif name == "pingo_patch_export":
+    elif name == "bingo_patch_export":
         args = ["patch", "export"]
         if arguments.get("output_dir"):
             args.append(arguments["output_dir"])
         return run_pingo(args, cwd)
 
-    elif name == "pingo_patch_import":
+    elif name == "bingo_patch_import":
         return run_pingo(["patch", "import", arguments["path"]], cwd)
 
-    elif name == "pingo_sync":
+    elif name == "bingo_sync":
         args = ["sync", "--force"]  # Skip interactive prompt
         if arguments.get("dry_run"):
             args = ["sync", "--dry-run"]
         return run_pingo(args, cwd)
 
-    elif name == "pingo_undo":
+    elif name == "bingo_undo":
         return run_pingo(["undo"], cwd, input_text="y\n")
 
-    elif name == "pingo_doctor":
+    elif name == "bingo_doctor":
         return run_pingo(["doctor"], cwd)
 
-    elif name == "pingo_diff":
+    elif name == "bingo_diff":
         return run_pingo(["diff"], cwd)
 
-    elif name == "pingo_auto_sync":
+    elif name == "bingo_auto_sync":
         schedule_map = {"daily": "1", "6h": "2", "weekly": "3"}
         choice = schedule_map.get(arguments.get("schedule", "daily"), "1")
         return run_pingo(["auto-sync"], cwd, input_text=f"{choice}\n")
 
-    elif name == "pingo_conflict_analyze":
+    elif name == "bingo_conflict_analyze":
         return run_pingo(["conflict-analyze", "--json"], cwd)
 
-    elif name == "pingo_conflict_resolve":
+    elif name == "bingo_conflict_resolve":
         file_path = os.path.realpath(os.path.join(cwd, arguments["file"]))
         real_cwd = os.path.realpath(cwd)
         if not file_path.startswith(real_cwd + os.sep) and file_path != real_cwd:
@@ -530,7 +530,7 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
         except Exception as e:
             return {"content": [{"type": "text", "text": f"Error: {e}"}], "isError": True}
 
-    elif name == "pingo_config":
+    elif name == "bingo_config":
         action = arguments.get("action", "list")
         if action == "get":
             return run_pingo(["config", "get", arguments.get("key", "")], cwd)
@@ -539,25 +539,25 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
         else:
             return run_pingo(["config", "list"], cwd)
 
-    elif name == "pingo_history":
+    elif name == "bingo_history":
         return run_pingo(["history"], cwd)
 
-    elif name == "pingo_test":
+    elif name == "bingo_test":
         return run_pingo(["test"], cwd)
 
-    elif name == "pingo_patch_meta":
+    elif name == "bingo_patch_meta":
         args = ["patch", "meta", arguments["name"]]
         if arguments.get("set_field") and arguments.get("value"):
             args += [f"--set-{arguments['set_field']}", arguments["value"]]
         return run_pingo(args, cwd)
 
-    elif name == "pingo_patch_squash":
+    elif name == "bingo_patch_squash":
         return run_pingo(["patch", "squash", str(arguments["index1"]), str(arguments["index2"])], cwd)
 
-    elif name == "pingo_patch_reorder":
+    elif name == "bingo_patch_reorder":
         return run_pingo(["patch", "reorder", "--order", arguments["order"]], cwd)
 
-    elif name == "pingo_workspace_status":
+    elif name == "bingo_workspace_status":
         return run_pingo(["workspace", "status"], cwd)
 
     else:
@@ -624,7 +624,7 @@ def main():
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
                 "serverInfo": {
-                    "name": "pingo-light",
+                    "name": "bingo-light",
                     "version": "1.0.0",
                 },
             }))

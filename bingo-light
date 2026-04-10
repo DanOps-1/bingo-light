@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# pingo-light — AI-native fork maintenance tool.
-# https://github.com/DanOps-1/pingo-light
+# bingo-light — AI-native fork maintenance tool.
+# https://github.com/DanOps-1/bingo-light
 #
 # Manages customizations as a clean patch stack on top of upstream,
 # designed for AI agents and LLM tool-use via MCP, JSON output, and non-interactive mode.
@@ -10,8 +10,8 @@
 set -euo pipefail
 
 VERSION="1.0.0"
-CONFIG_FILE=".pingolight"
-PATCH_PREFIX="[pl]"
+CONFIG_FILE=".bingolight"
+PATCH_PREFIX="[bl]"
 MAX_PATCHES=100
 JSON_MODE=false
 YES_MODE=false
@@ -55,8 +55,8 @@ dim()     { [[ "$JSON_MODE" == true ]] && return; echo -e "${DIM}$*${RESET}"; }
 
 json_escape() {
     # Read all input, escape for JSON string value
-    sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' -e 's/\r/\\r/g' \
-        -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g'
+    sed -e 's/\[bl\]/\[bl\]\[bl\]/g' -e 's/"/\[bl\]"/g' -e 's/\t/\[bl\]t/g' -e 's/\r/\[bl\]r/g' \
+        -e ':a' -e 'N' -e '$!ba' -e 's/\n/\[bl\]n/g'
 }
 json_out()    { echo "$1"; }
 
@@ -86,10 +86,10 @@ ensure_git_repo() {
     fi
 }
 
-# Run hooks: .pingo/hooks/<event> with JSON data on stdin
+# Run hooks: .bingo/hooks/<event> with JSON data on stdin
 run_hooks() {
     local event="$1" data="${2:-{\}}"
-    local hook=".pingo/hooks/$event"
+    local hook=".bingo/hooks/$event"
     if [[ -x "$hook" ]]; then
         echo "$data" | "$hook" 2>/dev/null || true
     fi
@@ -97,22 +97,22 @@ run_hooks() {
 
 ensure_initialized() {
     ensure_git_repo
-    [[ -f "$CONFIG_FILE" ]] || fatal "pingo-light not initialized. Run: ${BOLD}pingo-light init <upstream-url>${RESET}"
+    [[ -f "$CONFIG_FILE" ]] || fatal "bingo-light not initialized. Run: ${BOLD}bingo-light init <upstream-url>${RESET}"
 }
 
 load_config() {
     ensure_initialized
-    UPSTREAM_URL=$(git config --file "$CONFIG_FILE" pingolight.upstream-url 2>/dev/null || echo "")
-    UPSTREAM_BRANCH=$(git config --file "$CONFIG_FILE" pingolight.upstream-branch 2>/dev/null || echo "main")
-    PATCHES_BRANCH=$(git config --file "$CONFIG_FILE" pingolight.patches-branch 2>/dev/null || echo "pingo-patches")
-    TRACKING_BRANCH=$(git config --file "$CONFIG_FILE" pingolight.tracking-branch 2>/dev/null || echo "upstream-tracking")
+    UPSTREAM_URL=$(git config --file "$CONFIG_FILE" bingolight.upstream-url 2>/dev/null || echo "")
+    UPSTREAM_BRANCH=$(git config --file "$CONFIG_FILE" bingolight.upstream-branch 2>/dev/null || echo "main")
+    PATCHES_BRANCH=$(git config --file "$CONFIG_FILE" bingolight.patches-branch 2>/dev/null || echo "bingo-patches")
+    TRACKING_BRANCH=$(git config --file "$CONFIG_FILE" bingolight.tracking-branch 2>/dev/null || echo "upstream-tracking")
 }
 
 save_config() {
-    git config --file "$CONFIG_FILE" pingolight.upstream-url "$UPSTREAM_URL"
-    git config --file "$CONFIG_FILE" pingolight.upstream-branch "$UPSTREAM_BRANCH"
-    git config --file "$CONFIG_FILE" pingolight.patches-branch "$PATCHES_BRANCH"
-    git config --file "$CONFIG_FILE" pingolight.tracking-branch "$TRACKING_BRANCH"
+    git config --file "$CONFIG_FILE" bingolight.upstream-url "$UPSTREAM_URL"
+    git config --file "$CONFIG_FILE" bingolight.upstream-branch "$UPSTREAM_BRANCH"
+    git config --file "$CONFIG_FILE" bingolight.patches-branch "$PATCHES_BRANCH"
+    git config --file "$CONFIG_FILE" bingolight.tracking-branch "$TRACKING_BRANCH"
 }
 
 current_branch() {
@@ -143,16 +143,16 @@ cmd_init() {
     local upstream_branch="${2:-}"
 
     if [[ -z "$upstream_url" ]]; then
-        echo -e "${BOLD}Usage:${RESET} pingo-light init <upstream-url> [upstream-branch]"
+        echo -e "${BOLD}Usage:${RESET} bingo-light init <upstream-url> [upstream-branch]"
         echo ""
-        echo "  Initialize pingo-light in the current git repository."
+        echo "  Initialize bingo-light in the current git repository."
         echo ""
         echo "  upstream-url       URL of the original upstream repository"
         echo "  upstream-branch    Branch to track (default: auto-detect, fallback: main)"
         echo ""
         echo -e "${DIM}Example:${RESET}"
-        echo "  pingo-light init https://github.com/original/project.git"
-        echo "  pingo-light init https://github.com/original/project.git develop"
+        echo "  bingo-light init https://github.com/original/project.git"
+        echo "  bingo-light init https://github.com/original/project.git develop"
         return 1
     fi
 
@@ -160,11 +160,11 @@ cmd_init() {
 
     # Check if already initialized
     if [[ -f "$CONFIG_FILE" ]]; then
-        warn "pingo-light is already initialized in this repo."
+        warn "bingo-light is already initialized in this repo."
         confirm "Re-initialize? [y/N]" "n" || return 0
     fi
 
-    header "Initializing pingo-light..."
+    header "Initializing bingo-light..."
 
     # 1. Add upstream remote
     if git remote get-url upstream &>/dev/null; then
@@ -208,7 +208,7 @@ cmd_init() {
     # 4. Set config
     UPSTREAM_URL="$upstream_url"
     UPSTREAM_BRANCH="$upstream_branch"
-    PATCHES_BRANCH="pingo-patches"
+    PATCHES_BRANCH="bingo-patches"
     TRACKING_BRANCH="upstream-tracking"
 
     # 5. Enable rerere + diff3 (better conflict resolution)
@@ -253,8 +253,8 @@ cmd_init() {
 
     # 8b. Exclude config from git tracking (prevents it leaking into patches)
     # Uses .git/info/exclude instead of .gitignore — no commit needed, no noise
-    if ! grep -qF '.pingolight' .git/info/exclude 2>/dev/null; then
-        echo ".pingolight" >> .git/info/exclude
+    if ! grep -qF '.bingolight' .git/info/exclude 2>/dev/null; then
+        echo ".bingolight" >> .git/info/exclude
     fi
 
     # 9. Switch to patches branch
@@ -264,16 +264,16 @@ cmd_init() {
     fi
 
     echo ""
-    success "pingo-light initialized!"
+    success "bingo-light initialized!"
     echo ""
     echo -e "  ${DIM}Upstream :${RESET} $UPSTREAM_URL ($UPSTREAM_BRANCH)"
     echo -e "  ${DIM}Tracking :${RESET} $TRACKING_BRANCH (mirrors upstream, don't touch)"
     echo -e "  ${DIM}Patches  :${RESET} $PATCHES_BRANCH (your customizations go here)"
     echo ""
     echo -e "  ${BOLD}Next steps:${RESET}"
-    echo -e "  1. Make your changes, then: ${CYAN}pingo-light patch new <name>${RESET}"
-    echo -e "  2. To sync with upstream:   ${CYAN}pingo-light sync${RESET}"
-    echo -e "  3. To check health:         ${CYAN}pingo-light status${RESET}"
+    echo -e "  1. Make your changes, then: ${CYAN}bingo-light patch new <name>${RESET}"
+    echo -e "  2. To sync with upstream:   ${CYAN}bingo-light sync${RESET}"
+    echo -e "  3. To check health:         ${CYAN}bingo-light status${RESET}"
 }
 
 # ─── Command: patch ───────────────────────────────────────────────────────────
@@ -301,7 +301,7 @@ cmd_patch() {
         squash)          patch_squash "$@" ;;
         meta)            cmd_patch_meta "$@" ;;
         *)
-            echo -e "${BOLD}Usage:${RESET} pingo-light patch <command>"
+            echo -e "${BOLD}Usage:${RESET} bingo-light patch <command>"
             echo ""
             echo "Commands:"
             echo -e "  ${CYAN}new${RESET} <name>          Create a new patch from staged/unstaged changes"
@@ -314,9 +314,9 @@ cmd_patch() {
             echo -e "  ${CYAN}reorder${RESET}             Interactively reorder patches"
             echo ""
             echo -e "${DIM}Example:${RESET}"
-            echo "  pingo-light patch new add-custom-auth"
-            echo "  pingo-light patch list"
-            echo "  pingo-light patch export ./my-patches/"
+            echo "  bingo-light patch new add-custom-auth"
+            echo "  bingo-light patch list"
+            echo "  bingo-light patch export ./my-patches/"
             return 1
             ;;
     esac
@@ -327,14 +327,14 @@ patch_new() {
     local name="${1:-}"
 
     if [[ -z "$name" ]]; then
-        echo -e "${BOLD}Usage:${RESET} pingo-light patch new <name>"
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch new <name>"
         echo ""
         echo "  Create a new patch. If you have staged changes, they become the patch."
         echo "  If nothing is staged, ALL unstaged changes are included."
         echo ""
         echo -e "${DIM}Examples:${RESET}"
-        echo "  pingo-light patch new fix-login-bug"
-        echo "  pingo-light patch new add-dark-mode"
+        echo "  bingo-light patch new fix-login-bug"
+        echo "  bingo-light patch new add-dark-mode"
         return 1
     fi
 
@@ -381,7 +381,7 @@ patch_new() {
     # Prompt for description (skip in non-interactive mode)
     local description=""
     if [[ "$YES_MODE" == true ]]; then
-        description="${PINGO_DESCRIPTION:-no description}"
+        description="${BINGO_DESCRIPTION:-no description}"
     else
         echo -n "  Brief description (optional, Enter to skip): "
         read -r description
@@ -412,7 +412,7 @@ patch_list() {
         if [[ "$JSON_MODE" == true ]]; then
             json_out '{"ok":true,"patches":[],"count":0}'
         else
-            info "No patches yet. Create one with: ${CYAN}pingo-light patch new <name>${RESET}"
+            info "No patches yet. Create one with: ${CYAN}bingo-light patch new <name>${RESET}"
         fi
         return 0
     }
@@ -424,7 +424,7 @@ patch_list() {
         if [[ "$JSON_MODE" == true ]]; then
             json_out '{"ok":true,"patches":[],"count":0}'
         else
-            info "No patches yet. Create one with: ${CYAN}pingo-light patch new <name>${RESET}"
+            info "No patches yet. Create one with: ${CYAN}bingo-light patch new <name>${RESET}"
         fi
         return 0
     fi
@@ -505,7 +505,7 @@ patch_list() {
 
     echo ""
     dim "  Total: $total patch(es)"
-    dim "  Use 'pingo-light patch list -v' for file details"
+    dim "  Use 'bingo-light patch list -v' for file details"
 }
 
 patch_show() {
@@ -513,7 +513,7 @@ patch_show() {
     local target="${1:-}"
 
     if [[ -z "$target" ]]; then
-        echo -e "${BOLD}Usage:${RESET} pingo-light patch show <name|index>"
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch show <name|index>"
         return 1
     fi
 
@@ -542,10 +542,10 @@ patch_drop() {
     local target="${1:-}"
 
     if [[ -z "$target" ]]; then
-        echo -e "${BOLD}Usage:${RESET} pingo-light patch drop <name|index>"
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch drop <name|index>"
         echo ""
         echo "  Remove a patch from the stack."
-        echo "  Use 'pingo-light patch list' to see available patches."
+        echo "  Use 'bingo-light patch list' to see available patches."
         return 1
     fi
 
@@ -584,7 +584,7 @@ patch_edit() {
     local target="${1:-}"
 
     if [[ -z "$target" ]]; then
-        echo -e "${BOLD}Usage:${RESET} pingo-light patch edit <name|index>"
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch edit <name|index>"
         echo ""
         echo "  Stage your changes, then run this to fold them into an existing patch."
         return 1
@@ -672,7 +672,7 @@ patch_import() {
     local patch_file="${1:-}"
 
     if [[ -z "$patch_file" ]]; then
-        echo -e "${BOLD}Usage:${RESET} pingo-light patch import <file.patch>"
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch import <file.patch>"
         echo ""
         echo "  Import a .patch file (or directory of patches) into the stack."
         return 1
@@ -789,7 +789,7 @@ resolve_patch() {
         fi
     done <<< "$commits"
 
-    error "Patch '${target}' not found. Use 'pingo-light patch list' to see available patches."
+    error "Patch '${target}' not found. Use 'bingo-light patch list' to see available patches."
     return 1
 }
 
@@ -808,7 +808,7 @@ cmd_sync() {
             --force|-f)   force=true ;;
             --test|-t)    run_test=true ;;
             --help|-h)
-                echo -e "${BOLD}Usage:${RESET} pingo-light sync [options]"
+                echo -e "${BOLD}Usage:${RESET} bingo-light sync [options]"
                 echo ""
                 echo "Options:"
                 echo "  --dry-run, -n   Preview what would happen without making changes"
@@ -991,7 +991,7 @@ cmd_status() {
 
     load_config
 
-    header "pingo-light status"
+    header "bingo-light status"
     echo ""
 
     # Upstream info
@@ -1066,7 +1066,7 @@ cmd_status() {
                     echo -e "    ${YELLOW}${f}${RESET}"
                 done
                 echo ""
-                echo -e "  ${DIM}Run 'pingo-light sync --dry-run' to test before syncing.${RESET}"
+                echo -e "  ${DIM}Run 'bingo-light sync --dry-run' to test before syncing.${RESET}"
                 echo ""
             else
                 echo -e "  ${GREEN}No overlap${RESET} between your patches and upstream changes."
@@ -1102,7 +1102,7 @@ cmd_doctor() {
         if [[ "$status" == "fail" ]]; then issues=$((issues + 1)); fi
     }
 
-    [[ "$JSON_MODE" != true ]] && { header "pingo-light doctor"; echo ""; }
+    [[ "$JSON_MODE" != true ]] && { header "bingo-light doctor"; echo ""; }
 
     # Check git version
     local git_ver
@@ -1202,13 +1202,13 @@ cmd_autosync() {
     load_config
 
     local output_dir=".github/workflows"
-    local output_file="$output_dir/pingo-light-sync.yml"
+    local output_file="$output_dir/bingo-light-sync.yml"
 
     header "Generate GitHub Actions auto-sync workflow"
     echo ""
 
     # Ask for schedule
-    local choice="${PINGO_SCHEDULE:-}"
+    local choice="${BINGO_SCHEDULE:-}"
     if [[ -z "$choice" && "$YES_MODE" != true ]]; then
         echo -e "  How often should auto-sync run?"
         echo -e "  ${CYAN}1${RESET}) Daily (recommended)"
@@ -1229,11 +1229,11 @@ cmd_autosync() {
     mkdir -p "$output_dir"
 
     cat > "$output_file" << 'WORKFLOW_EOF'
-# Generated by pingo-light
+# Generated by bingo-light
 # Automatically syncs your fork with upstream and rebases patches.
 # On failure, creates a GitHub Issue to notify you.
 
-name: Pingo Light Auto-Sync
+name: Bingo Light Auto-Sync
 
 on:
   schedule:
@@ -1256,8 +1256,8 @@ jobs:
 
       - name: Configure Git
         run: |
-          git config user.name "pingo-light[bot]"
-          git config user.email "pingo-light[bot]@users.noreply.github.com"
+          git config user.name "bingo-light[bot]"
+          git config user.email "bingo-light[bot]@users.noreply.github.com"
 
       - name: Fetch upstream
         run: |
@@ -1292,14 +1292,14 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const title = `[pingo-light] Sync conflict detected (${new Date().toISOString().split('T')[0]})`;
-            const body = `## Auto-sync failed\n\nUpstream has changes that conflict with your patches.\n\n**Action required:** Run \`pingo-light sync\` locally to resolve conflicts.\n\n---\n*This issue was created automatically by pingo-light.*`;
+            const title = `[bingo-light] Sync conflict detected (${new Date().toISOString().split('T')[0]})`;
+            const body = `## Auto-sync failed\n\nUpstream has changes that conflict with your patches.\n\n**Action required:** Run \`bingo-light sync\` locally to resolve conflicts.\n\n---\n*This issue was created automatically by bingo-light.*`;
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title,
               body,
-              labels: ['pingo-light', 'sync-conflict']
+              labels: ['bingo-light', 'sync-conflict']
             });
 WORKFLOW_EOF
 
@@ -1585,9 +1585,9 @@ cmd_config() {
     case "$subcmd" in
         get)
             local key="${1:-}"
-            [[ -z "$key" ]] && fatal "Usage: pingo-light config get <key>"
+            [[ -z "$key" ]] && fatal "Usage: bingo-light config get <key>"
             local val
-            val=$(git config --file "$CONFIG_FILE" "pingolight.$key" 2>/dev/null || git config --file "$CONFIG_FILE" "$key" 2>/dev/null || echo "")
+            val=$(git config --file "$CONFIG_FILE" "bingolight.$key" 2>/dev/null || git config --file "$CONFIG_FILE" "$key" 2>/dev/null || echo "")
             if [[ "$JSON_MODE" == true ]]; then
                 json_out '{"ok":true,"key":"'"$key"'","value":"'"$(echo "$val" | json_escape)"'"}'
             else
@@ -1596,8 +1596,8 @@ cmd_config() {
             ;;
         set)
             local key="${1:-}" val="${2:-}"
-            [[ -z "$key" || -z "$val" ]] && fatal "Usage: pingo-light config set <key> <value>"
-            git config --file "$CONFIG_FILE" "pingolight.$key" "$val"
+            [[ -z "$key" || -z "$val" ]] && fatal "Usage: bingo-light config set <key> <value>"
+            git config --file "$CONFIG_FILE" "bingolight.$key" "$val"
             if [[ "$JSON_MODE" == true ]]; then
                 json_out '{"ok":true,"key":"'"$key"'","value":"'"$(echo "$val" | json_escape)"'"}'
             else
@@ -1620,15 +1620,15 @@ cmd_config() {
             fi
             ;;
         *)
-            echo -e "${BOLD}Usage:${RESET} pingo-light config <get|set|list>"
+            echo -e "${BOLD}Usage:${RESET} bingo-light config <get|set|list>"
             echo ""
             echo "  get <key>          Get a config value"
             echo "  set <key> <value>  Set a config value"
             echo "  list               List all config"
             echo ""
             echo -e "${DIM}Examples:${RESET}"
-            echo "  pingo-light config set sync.dry-run-first true"
-            echo "  pingo-light config get sync.dry-run-first"
+            echo "  bingo-light config set sync.dry-run-first true"
+            echo "  bingo-light config get sync.dry-run-first"
             return 1
             ;;
     esac
@@ -1636,8 +1636,8 @@ cmd_config() {
 
 # ─── Command: patch meta ──────────────────────────────────────────────────────
 
-METADATA_DIR=".pingo"
-METADATA_FILE=".pingo/metadata.json"
+METADATA_DIR=".bingo"
+METADATA_FILE=".bingo/metadata.json"
 
 ensure_metadata() {
     mkdir -p "$METADATA_DIR"
@@ -1650,7 +1650,7 @@ cmd_patch_meta() {
     shift 2>/dev/null || true
 
     if [[ -z "$target" ]]; then
-        echo -e "${BOLD}Usage:${RESET} pingo-light patch meta <name> [--set-reason|--set-tag|--set-expires|--set-upstream-pr] <value>"
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch meta <name> [--set-reason|--set-tag|--set-expires|--set-upstream-pr] <value>"
         return 1
     fi
 
@@ -1728,7 +1728,7 @@ patch_squash() {
     local idx1="${1:-}" idx2="${2:-}"
 
     if [[ -z "$idx1" || -z "$idx2" ]]; then
-        echo -e "${BOLD}Usage:${RESET} pingo-light patch squash <index1> <index2>"
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch squash <index1> <index2>"
         echo "  Squash two adjacent patches into one."
         return 1
     fi
@@ -1808,11 +1808,11 @@ print(script)
 
 # ─── Command: history (sync history tracking) ────────────────────────────────
 
-SYNC_HISTORY_FILE=".pingo/sync-history.json"
+SYNC_HISTORY_FILE=".bingo/sync-history.json"
 
 record_sync_history() {
     local cwd="$1" behind="$2"
-    ensure_metadata  # creates .pingo/ dir
+    ensure_metadata  # creates .bingo/ dir
 
     local upstream_before upstream_after
     upstream_before="${3:-}"
@@ -1900,11 +1900,11 @@ cmd_test() {
     # Read test command from config, or use argument
     local test_cmd="${1:-}"
     if [[ -z "$test_cmd" ]]; then
-        test_cmd=$(git config --file "$CONFIG_FILE" pingolight.test.command 2>/dev/null || echo "")
+        test_cmd=$(git config --file "$CONFIG_FILE" bingolight.test.command 2>/dev/null || echo "")
     fi
 
     if [[ -z "$test_cmd" ]]; then
-        fatal "No test command. Set one with: pingo-light config set test.command 'make test'"
+        fatal "No test command. Set one with: bingo-light config set test.command 'make test'"
     fi
 
     info "Running: $test_cmd"
@@ -1927,7 +1927,7 @@ cmd_test() {
 
 # ─── Command: workspace ───────────────────────────────────────────────────────
 
-WORKSPACE_CONFIG="${HOME}/.config/pingo-light/workspace.json"
+WORKSPACE_CONFIG="${HOME}/.config/bingo-light/workspace.json"
 
 cmd_workspace() {
     local subcmd="${1:-}"
@@ -1943,7 +1943,7 @@ cmd_workspace() {
             local repo_path="${1:-$(pwd)}"
             repo_path=$(cd "$repo_path" 2>/dev/null && pwd)
             local alias="${2:-$(basename "$repo_path")}"
-            [[ -f "$WORKSPACE_CONFIG" ]] || { fatal "Run 'pingo-light workspace init' first."; }
+            [[ -f "$WORKSPACE_CONFIG" ]] || { fatal "Run 'bingo-light workspace init' first."; }
 
             python3 -c "
 import json
@@ -1956,7 +1956,7 @@ print('OK Added: $alias ($repo_path)')
 " 2>/dev/null
             ;;
         status)
-            [[ -f "$WORKSPACE_CONFIG" ]] || { fatal "No workspace. Run 'pingo-light workspace init'."; }
+            [[ -f "$WORKSPACE_CONFIG" ]] || { fatal "No workspace. Run 'bingo-light workspace init'."; }
 
             if [[ "$JSON_MODE" == true ]]; then
                 local results="["
@@ -2043,7 +2043,7 @@ for r in data.get('repos', []):
             fi
             ;;
         *)
-            echo -e "${BOLD}Usage:${RESET} pingo-light workspace <command>"
+            echo -e "${BOLD}Usage:${RESET} bingo-light workspace <command>"
             echo ""
             echo "Commands:"
             echo -e "  ${CYAN}init${RESET}                  Initialize workspace config"
@@ -2061,13 +2061,13 @@ for r in data.get('repos', []):
 show_help() {
     cat << 'EOF'
 
-  pingo-light — AI-native fork maintenance tool.
+  bingo-light — AI-native fork maintenance tool.
 
   Manages your customizations as a clean patch stack on top of upstream,
   so syncing with upstream is always a one-command operation.
 
 EOF
-    echo -e "  ${BOLD}Usage:${RESET} pingo-light <command> [options]"
+    echo -e "  ${BOLD}Usage:${RESET} bingo-light <command> [options]"
     echo ""
     echo -e "  ${BOLD}Setup:${RESET}"
     echo -e "    ${CYAN}init${RESET} <upstream-url> [branch]   Initialize fork tracking"
@@ -2101,15 +2101,15 @@ EOF
     echo -e "    git clone https://github.com/YOU/project.git"
     echo -e "    cd project"
     echo ""
-    echo -e "    ${DIM}# 2. Initialize pingo-light${RESET}"
-    echo -e "    pingo-light init https://github.com/ORIGINAL/project.git"
+    echo -e "    ${DIM}# 2. Initialize bingo-light${RESET}"
+    echo -e "    bingo-light init https://github.com/ORIGINAL/project.git"
     echo ""
     echo -e "    ${DIM}# 3. Make changes and create patches${RESET}"
     echo -e "    vim src/feature.py"
-    echo -e "    pingo-light patch new my-custom-feature"
+    echo -e "    bingo-light patch new my-custom-feature"
     echo ""
     echo -e "    ${DIM}# 4. Later, sync with upstream${RESET}"
-    echo -e "    pingo-light sync"
+    echo -e "    bingo-light sync"
     echo ""
     echo -e "  ${DIM}Version $VERSION${RESET}"
 }
@@ -2133,9 +2133,9 @@ main() {
         history)            cmd_history "$@" ;;
         test)               cmd_test "$@" ;;
         workspace|ws)       cmd_workspace "$@" ;;
-        version|-v|--version) echo "pingo-light $VERSION" ;;
+        version|-v|--version) echo "bingo-light $VERSION" ;;
         help|-h|--help|"")    show_help ;;
-        *)          fatal "Unknown command: $cmd. Run 'pingo-light --help' for usage." ;;
+        *)          fatal "Unknown command: $cmd. Run 'bingo-light --help' for usage." ;;
     esac
 }
 

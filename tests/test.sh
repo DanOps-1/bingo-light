@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# pingo-light test suite
-# Usage: ./tests/test.sh [path-to-pingo-light]
+# bingo-light test suite
+# Usage: ./tests/test.sh [path-to-bingo-light]
 set -uo pipefail
 
-PINGO="${1:-$(cd "$(dirname "$0")/.." && pwd)/pingo-light}"
+PINGO="${1:-$(cd "$(dirname "$0")/.." && pwd)/bingo-light}"
 TMPDIR_BASE=$(mktemp -d)
 PASS=0 FAIL=0 SKIP=0
 OUT=""
@@ -57,8 +57,8 @@ setup_repos() {
 
 section "1. Basic CLI"
 
-assert "--help shows usage"         "pingo-light"    --help
-assert "--version shows version"    "pingo-light"    --version
+assert "--help shows usage"         "bingo-light"    --help
+assert "--version shows version"    "bingo-light"    --version
 assert "unknown command shows error" "unknown"        nonexistent
 
 # ─── init ─────────────────────────────────────────────────────────────────────
@@ -72,9 +72,9 @@ cd "$fork"
 OUT=$("$PINGO" init "$upstream" main < /dev/null 2>&1) || true
 if has "initialized"; then pass "init succeeds"; else fail "init" "did not report success"; fi
 
-if [[ -f .pingolight ]]; then pass "config file created"; else fail "config file" "not found"; fi
+if [[ -f .bingolight ]]; then pass "config file created"; else fail "config file" "not found"; fi
 if git rev-parse --verify upstream-tracking &>/dev/null; then pass "tracking branch created"; else fail "tracking branch" "not found"; fi
-if git rev-parse --verify pingo-patches &>/dev/null; then pass "patches branch created"; else fail "patches branch" "not found"; fi
+if git rev-parse --verify bingo-patches &>/dev/null; then pass "patches branch created"; else fail "patches branch" "not found"; fi
 if [[ "$(git config rerere.enabled)" == "true" ]]; then pass "rerere enabled"; else fail "rerere" "not enabled"; fi
 
 repos=$(setup_repos init-auto)
@@ -96,8 +96,8 @@ echo "custom_feature = True" >> app.py
 OUT=$(echo "added feature" | "$PINGO" patch new test-feature 2>&1) || true
 if has "created"; then pass "patch new creates patch"; else fail "patch new" "did not report creation"; fi
 
-if git log -1 --format="%s" | grep -q '^\[pl\] test-feature:'; then
-    pass "commit message has [pl] prefix"
+if git log -1 --format="%s" | grep -q '^\[bl\] test-feature:'; then
+    pass "commit message has [bl] prefix"
 else
     fail "commit format" "$(git log -1 --format='%s')"
 fi
@@ -192,7 +192,7 @@ cd "$fork"
 run sync --dry-run
 if has "dry run"; then pass "sync --dry-run works"; else fail "sync dry-run" "no dry-run output"; fi
 
-if [[ "$(git rev-parse HEAD)" == "$(git rev-parse pingo-patches)" ]]; then
+if [[ "$(git rev-parse HEAD)" == "$(git rev-parse bingo-patches)" ]]; then
     pass "dry-run didn't modify branches"
 else
     fail "dry-run safety" "branches were modified"
@@ -255,7 +255,7 @@ section "12. Undo"
 cd "$fork"
 "$PINGO" sync --force &>/dev/null || true
 
-saved_head=$(git rev-parse pingo-patches)
+saved_head=$(git rev-parse bingo-patches)
 
 cd "$upstream"
 echo "# undo test" >> README.md
@@ -263,7 +263,7 @@ git add -A && git commit -q -m "Upstream: for undo test"
 cd "$fork"
 "$PINGO" sync --force &>/dev/null || true
 
-new_head=$(git rev-parse pingo-patches)
+new_head=$(git rev-parse bingo-patches)
 if [[ "$saved_head" != "$new_head" ]]; then
     OUT=$(echo "y" | "$PINGO" undo 2>&1) || true
     if has "undone\|restored"; then pass "undo restores previous state"; else fail "undo" "did not restore"; fi
@@ -299,8 +299,8 @@ section "14. Auto-Sync"
 OUT=$(echo "1" | "$PINGO" auto-sync 2>&1) || true
 if has "workflow generated"; then pass "auto-sync generates workflow"; else fail "auto-sync" "no workflow generated"; fi
 
-if [[ -f .github/workflows/pingo-light-sync.yml ]]; then pass "workflow file exists"; else fail "workflow file" "not found"; fi
-if grep -q "pingo-light" .github/workflows/pingo-light-sync.yml; then pass "workflow references pingo-light"; else fail "workflow content" "missing reference"; fi
+if [[ -f .github/workflows/bingo-light-sync.yml ]]; then pass "workflow file exists"; else fail "workflow file" "not found"; fi
+if grep -q "bingo-light" .github/workflows/bingo-light-sync.yml; then pass "workflow references bingo-light"; else fail "workflow content" "missing reference"; fi
 
 # ─── MCP server ───────────────────────────────────────────────────────────────
 
@@ -356,7 +356,7 @@ done
 
 # patch show needs a patch
 echo "json-test" >> app.py
-PINGO_DESCRIPTION="json test" "$PINGO" patch new json-test-patch --yes &>/dev/null || true
+BINGO_DESCRIPTION="json test" "$PINGO" patch new json-test-patch --yes &>/dev/null || true
 OUT=$("$PINGO" patch show 1 --json 2>/dev/null) || true
 if json_valid "$OUT"; then pass "patch show --json valid"; else fail "patch show --json" "invalid JSON"; fi
 
@@ -416,7 +416,7 @@ cd "$fork_cf"
 
 # Create a patch that touches app.py
 echo "my_change" >> app.py
-PINGO_DESCRIPTION="my change" "$PINGO" patch new my-change --yes &>/dev/null || true
+BINGO_DESCRIPTION="my change" "$PINGO" patch new my-change --yes &>/dev/null || true
 
 # Make upstream change the SAME line (force conflict)
 cd "$upstream"
@@ -454,7 +454,7 @@ cd "$fork_ni"
 # Full non-interactive init+patch+status via --yes and env vars
 "$PINGO" init "$upstream" --yes &>/dev/null || true
 echo "auto" >> app.py
-OUT=$(PINGO_DESCRIPTION="automated patch" "$PINGO" patch new auto-patch --yes 2>/dev/null) || true
+OUT=$(BINGO_DESCRIPTION="automated patch" "$PINGO" patch new auto-patch --yes 2>/dev/null) || true
 if has "created"; then pass "--yes patch new works"; else fail "--yes patch new" "did not create"; fi
 
 # Status via pipe (non-TTY auto-detected)

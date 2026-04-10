@@ -11,25 +11,25 @@ upstream-tracking -------- exact mirror of upstream, never modified manually
     |
     |  rebase
     v
-pingo-patches ------------ your customizations live here
+bingo-patches ------------ your customizations live here
     |
-    +-- [pl] dark-mode:     support dark color scheme
-    +-- [pl] api-cache:     add Redis caching layer
-    +-- [pl] fix-typo:      fix README typo
+    +-- [bl] dark-mode:     support dark color scheme
+    +-- [bl] api-cache:     add Redis caching layer
+    +-- [bl] fix-typo:      fix README typo
 ```
 
 ## Patch Stack
 
-Each customization is one git commit with a `[pl]` prefix. Patches are ordered — bottom patches are applied first.
+Each customization is one git commit with a `[bl]` prefix. Patches are ordered — bottom patches are applied first.
 
 Operations: `patch new`, `patch list`, `patch show`, `patch edit`, `patch drop`, `patch reorder`, `patch squash`, `patch export/import`.
 
 ## Sync Flow
 
-`pingo-light sync` does:
+`bingo-light sync` does:
 1. `git fetch upstream`
 2. Fast-forward `upstream-tracking` to `upstream/main`
-3. `git rebase --onto upstream-tracking <old-base> pingo-patches`
+3. `git rebase --onto upstream-tracking <old-base> bingo-patches`
 
 Your patches are replayed on top of the latest upstream. If a patch conflicts, the rebase pauses for you to resolve.
 
@@ -37,12 +37,12 @@ Your patches are replayed on top of the latest upstream. If a patch conflicts, t
 
 - **git rerere** is auto-enabled: resolved conflicts are remembered
 - **diff3 merge style** shows the common ancestor in conflict markers
-- `pingo-light conflict-analyze --json` gives structured conflict info for AI agents
-- `pingo-light undo` reverts the last sync if something goes wrong
+- `bingo-light conflict-analyze --json` gives structured conflict info for AI agents
+- `bingo-light undo` reverts the last sync if something goes wrong
 
 ## Patch Metadata
 
-Optional metadata stored in `.pingo/metadata.json`:
+Optional metadata stored in `.bingo/metadata.json`:
 - **reason**: why this patch exists
 - **tags**: categorization (bugfix, feature, temporary)
 - **expires**: when to reconsider this patch
@@ -51,14 +51,14 @@ Optional metadata stored in `.pingo/metadata.json`:
 
 ## Sync History
 
-Every successful sync is recorded in `.pingo/sync-history.json` with:
+Every successful sync is recorded in `.bingo/sync-history.json` with:
 - Timestamp
 - Upstream commit range integrated
 - Patch hash mapping (old hash → new hash after rebase)
 
 ## Hooks
 
-Executable scripts in `.pingo/hooks/` are called after key events:
+Executable scripts in `.bingo/hooks/` are called after key events:
 - `on-sync-success` — after clean sync
 - `on-conflict` — when sync hits a conflict
 - `on-test-fail` — when `sync --test` fails

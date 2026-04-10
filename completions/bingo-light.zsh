@@ -1,15 +1,15 @@
-#compdef pingo-light
-# Zsh completion for pingo-light
+#compdef bingo-light
+# Zsh completion for bingo-light
 # Place in a directory listed in $fpath, or source directly.
 #
 # Usage:
-#   source pingo-light.zsh
+#   source bingo-light.zsh
 #   # or
-#   cp pingo-light.zsh /usr/local/share/zsh/site-functions/_pingo-light
+#   cp bingo-light.zsh /usr/local/share/zsh/site-functions/_bingo-light
 
-_pingo-light() {
+_bingo-light() {
     local -a toplevel_commands=(
-        'init:Initialize a new pingo-light project'
+        'init:Initialize a new bingo-light project'
         'patch:Manage patches'
         'sync:Synchronize changes with upstream'
         'status:Show current status'
@@ -80,7 +80,7 @@ _pingo-light() {
 
     case $state in
         command)
-            _describe -t commands 'pingo-light command' toplevel_commands
+            _describe -t commands 'bingo-light command' toplevel_commands
             _describe -t aliases 'short alias' toplevel_aliases
             ;;
         args)
@@ -130,4 +130,4 @@ _pingo-light() {
     esac
 }
 
-_pingo-light "$@"
+_bingo-light "$@"

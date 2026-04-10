@@ -1,12 +1,12 @@
-# Bash completion for pingo-light
+# Bash completion for bingo-light
 # Source this file or place it in /etc/bash_completion.d/
 #
 # Usage:
-#   source pingo-light.bash
+#   source bingo-light.bash
 #   # or
-#   cp pingo-light.bash /etc/bash_completion.d/pingo-light
+#   cp bingo-light.bash /etc/bash_completion.d/bingo-light
 
-_pingo_light() {
+_bingo_light() {
     local cur prev words cword
     _init_completion || return
 
@@ -105,4 +105,4 @@ _pingo_light() {
     fi
 }
 
-complete -F _pingo_light pingo-light
+complete -F _bingo_light bingo-light
