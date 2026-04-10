@@ -956,6 +956,40 @@ cmd_sync() {
             fi
         fi
     else
+        # Check if rerere auto-resolved all conflicts
+        local unresolved
+        unresolved=$(git diff --name-only --diff-filter=U 2>/dev/null)
+        if [[ -z "$unresolved" ]]; then
+            # rerere resolved everything! Auto-continue the rebase.
+            info "rerere auto-resolved conflicts, continuing rebase..."
+            # Loop: continue rebase until done or a real conflict appears
+            local rerere_ok=true
+            while [[ -d .git/rebase-merge || -d .git/rebase-apply ]]; do
+                if GIT_EDITOR=true git rebase --continue 2>&1; then
+                    break  # rebase done
+                fi
+                # Check again if rerere resolved the new conflict
+                unresolved=$(git diff --name-only --diff-filter=U 2>/dev/null)
+                if [[ -n "$unresolved" ]]; then
+                    rerere_ok=false
+                    break  # real unresolved conflict
+                fi
+            done
+
+            if [[ "$rerere_ok" == true ]]; then
+                record_sync_history "$(pwd)" "$behind" "$(git rev-parse --short "$saved_tracking" 2>/dev/null)"
+                run_hooks "on-sync-success" '{"behind_before":'"$behind"',"patches_rebased":'"$patch_count"',"rerere_resolved":true}'
+                if [[ "$JSON_MODE" == true ]]; then
+                    json_out '{"ok":true,"synced":true,"behind_before":'"$behind"',"patches_rebased":'"$patch_count"',"rerere_resolved":true}'
+                else
+                    echo ""
+                    success "Sync complete! rerere auto-resolved conflicts."
+                    dim "  You are now up to date with upstream."
+                fi
+                return 0
+            fi
+        fi
+
         run_hooks "on-conflict" '{"patch_count":'"$patch_count"'}'
         if [[ "$JSON_MODE" == true ]]; then
             local conflicted_files
