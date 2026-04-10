@@ -1,0 +1,133 @@
+#compdef pingo-light
+# Zsh completion for pingo-light
+# Place in a directory listed in $fpath, or source directly.
+#
+# Usage:
+#   source pingo-light.zsh
+#   # or
+#   cp pingo-light.zsh /usr/local/share/zsh/site-functions/_pingo-light
+
+_pingo-light() {
+    local -a toplevel_commands=(
+        'init:Initialize a new pingo-light project'
+        'patch:Manage patches'
+        'sync:Synchronize changes with upstream'
+        'status:Show current status'
+        'doctor:Diagnose and fix common problems'
+        'auto-sync:Enable or configure automatic synchronization'
+        'log:Show change log'
+        'undo:Undo the last operation'
+        'diff:Show differences between states'
+        'version:Print version information'
+        'help:Show help for a command'
+    )
+
+    local -a toplevel_aliases=(
+        'p:Alias for patch'
+        's:Alias for sync'
+        'st:Alias for status'
+        'd:Alias for diff'
+    )
+
+    local -a patch_subcommands=(
+        'new:Create a new patch'
+        'list:List all patches'
+        'show:Show details of a patch'
+        'edit:Edit an existing patch'
+        'drop:Remove a patch'
+        'export:Export patches to files'
+        'import:Import patches from files'
+        'reorder:Reorder the patch stack'
+    )
+
+    local -a patch_aliases=(
+        'ls:Alias for list'
+        'add:Alias for new'
+        'create:Alias for new'
+        'rm:Alias for drop'
+        'remove:Alias for drop'
+    )
+
+    local -a sync_flags=(
+        '(-f --force)'{-f,--force}'[Force sync, overwriting conflicts]'
+        '(-n --dry-run)'{-n,--dry-run}'[Show what would be done without making changes]'
+        '(- *)'{-h,--help}'[Show help]'
+    )
+
+    local -a patch_list_flags=(
+        '(-v --verbose)'{-v,--verbose}'[Show detailed patch information]'
+        '(- *)'{-h,--help}'[Show help]'
+    )
+
+    local -a global_flags=(
+        '(- *)'{-h,--help}'[Show help]'
+        '(- *)--version[Show version]'
+    )
+
+    local -a help_flag=(
+        '(- *)'{-h,--help}'[Show help]'
+    )
+
+    # Determine which command we are completing for.
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    _arguments -C \
+        '(- *)'{-h,--help}'[Show help]' \
+        '(- *)--version[Show version]' \
+        '1:command:->command' \
+        '*::arg:->args' && return
+
+    case $state in
+        command)
+            _describe -t commands 'pingo-light command' toplevel_commands
+            _describe -t aliases 'short alias' toplevel_aliases
+            ;;
+        args)
+            local cmd="${line[1]}"
+            case $cmd in
+                patch|p)
+                    _arguments -C \
+                        '(- *)'{-h,--help}'[Show help]' \
+                        '1:subcommand:->patch_subcmd' \
+                        '*::arg:->patch_args' && return
+
+                    case $state in
+                        patch_subcmd)
+                            _describe -t subcommands 'patch subcommand' patch_subcommands
+                            _describe -t aliases 'short alias' patch_aliases
+                            ;;
+                        patch_args)
+                            local subcmd="${line[1]}"
+                            case $subcmd in
+                                list|ls)
+                                    _arguments $patch_list_flags
+                                    ;;
+                                new|add|create|show|edit|drop|rm|remove|export|import|reorder)
+                                    _arguments $help_flag
+                                    ;;
+                            esac
+                            ;;
+                    esac
+                    ;;
+                sync|s)
+                    _arguments $sync_flags
+                    ;;
+                status|st)
+                    _arguments $help_flag
+                    ;;
+                diff|d)
+                    _arguments $help_flag
+                    ;;
+                init|doctor|auto-sync|log|undo|version)
+                    _arguments $help_flag
+                    ;;
+                help)
+                    _describe -t commands 'command' toplevel_commands
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_pingo-light "$@"

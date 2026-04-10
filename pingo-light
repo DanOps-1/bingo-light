@@ -196,6 +196,12 @@ cmd_init() {
     # 8. Save config
     save_config
 
+    # 8b. Exclude config from git tracking (prevents it leaking into patches)
+    # Uses .git/info/exclude instead of .gitignore — no commit needed, no noise
+    if ! grep -qF '.pingolight' .git/info/exclude 2>/dev/null; then
+        echo ".pingolight" >> .git/info/exclude
+    fi
+
     # 9. Switch to patches branch
     if [[ "$(current_branch)" != "$PATCHES_BRANCH" ]]; then
         info "Switching to patches branch '${PATCHES_BRANCH}'..."
