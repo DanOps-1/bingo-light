@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# pingo-light hook: send to any webhook URL
+# Install: cp this to .pingo/hooks/on-sync-success (or on-conflict)
+# Set PINGO_WEBHOOK_URL environment variable
+
+set -euo pipefail
+
+WEBHOOK="${PINGO_WEBHOOK_URL:-}"
+[[ -z "$WEBHOOK" ]] && exit 0
+
+DATA=$(cat)
+EVENT=$(basename "$0")
+
+curl -s -X POST "$WEBHOOK" \
+  -H 'Content-type: application/json' \
+  -d '{"event":"'"$EVENT"'","data":'"$DATA"'}' \
+  >/dev/null 2>&1 || true

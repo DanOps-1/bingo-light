@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-VERSION="0.9.0"
+VERSION="1.0.0"
 CONFIG_FILE=".pingolight"
 PATCH_PREFIX="[pl]"
 MAX_PATCHES=100
