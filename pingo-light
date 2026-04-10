@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-VERSION="0.7.0"
+VERSION="0.8.0"
 CONFIG_FILE=".pingolight"
 PATCH_PREFIX="[pl]"
 MAX_PATCHES=100
@@ -79,6 +79,20 @@ confirm() {
 
 ensure_git_repo() {
     git rev-parse --is-inside-work-tree &>/dev/null || fatal "Not a git repository. Run this inside a git repo."
+    # Auto-unshallow if shallow clone (CI environments)
+    if git rev-parse --is-shallow-repository 2>/dev/null | grep -q true; then
+        info "Shallow clone detected, unshallowing..."
+        git fetch --unshallow 2>/dev/null || true
+    fi
+}
+
+# Run hooks: .pingo/hooks/<event> with JSON data on stdin
+run_hooks() {
+    local event="$1" data="${2:-{\}}"
+    local hook=".pingo/hooks/$event"
+    if [[ -x "$hook" ]]; then
+        echo "$data" | "$hook" 2>/dev/null || true
+    fi
 }
 
 ensure_initialized() {
@@ -197,10 +211,11 @@ cmd_init() {
     PATCHES_BRANCH="pingo-patches"
     TRACKING_BRANCH="upstream-tracking"
 
-    # 5. Enable rerere (remember conflict resolutions)
-    info "Enabling git rerere (auto-remembers conflict resolutions)..."
+    # 5. Enable rerere + diff3 (better conflict resolution)
+    info "Enabling git rerere + diff3 merge style..."
     git config rerere.enabled true
     git config rerere.autoupdate true
+    git config merge.conflictstyle diff3
 
     # 6. Create tracking branch (mirrors upstream exactly)
     info "Creating tracking branch '${TRACKING_BRANCH}'..."
@@ -785,17 +800,20 @@ cmd_sync() {
 
     local dry_run=false
     local force=false
+    local run_test=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --dry-run|-n) dry_run=true ;;
             --force|-f)   force=true ;;
+            --test|-t)    run_test=true ;;
             --help|-h)
                 echo -e "${BOLD}Usage:${RESET} pingo-light sync [options]"
                 echo ""
                 echo "Options:"
                 echo "  --dry-run, -n   Preview what would happen without making changes"
                 echo "  --force, -f     Skip confirmation prompt"
+                echo "  --test, -t      Run tests after sync; auto-undo on failure"
                 echo ""
                 return 0
                 ;;
@@ -900,8 +918,27 @@ cmd_sync() {
     echo ""
 
     if git rebase --onto "$TRACKING_BRANCH" "$saved_tracking" "$PATCHES_BRANCH" 2>&1; then
-        # Record sync history
+        # Record sync history + run hooks
         record_sync_history "$(pwd)" "$behind" "$(git rev-parse --short "$saved_tracking" 2>/dev/null)"
+        run_hooks "on-sync-success" '{"behind_before":'"$behind"',"patches_rebased":'"$patch_count"'}'
+
+        # Run tests after sync if --test flag
+        if [[ "$run_test" == true ]]; then
+            info "Running post-sync tests..."
+            if ! cmd_test 2>/dev/null; then
+                warn "Tests failed after sync! Auto-undoing..."
+                git branch -f "$PATCHES_BRANCH" "$saved_head" 2>/dev/null
+                [[ "$(current_branch)" == "$PATCHES_BRANCH" ]] && git reset --hard "$saved_head" 2>/dev/null
+                git branch -f "$TRACKING_BRANCH" "$saved_tracking" 2>/dev/null
+                run_hooks "on-test-fail" '{"behind_before":'"$behind"'}'
+                if [[ "$JSON_MODE" == true ]]; then
+                    json_out '{"ok":false,"synced":false,"test":"fail","auto_undone":true}'
+                else
+                    error "Sync undone due to test failure."
+                fi
+                return 1
+            fi
+        fi
 
         if [[ "$JSON_MODE" == true ]]; then
             json_out '{"ok":true,"synced":true,"behind_before":'"$behind"',"patches_rebased":'"$patch_count"'}'
@@ -915,6 +952,7 @@ cmd_sync() {
             fi
         fi
     else
+        run_hooks "on-conflict" '{"patch_count":'"$patch_count"'}'
         if [[ "$JSON_MODE" == true ]]; then
             local conflicted_files
             conflicted_files=$(git diff --name-only --diff-filter=U 2>/dev/null | json_escape)
@@ -1879,6 +1917,39 @@ for s in reversed(data.get('syncs', [])[-10:]):
 " 2>/dev/null || info "Could not read history."
 }
 
+# ─── Command: test ─────────────────────────────────────────────────────────────
+
+cmd_test() {
+    load_config
+
+    # Read test command from config, or use argument
+    local test_cmd="${1:-}"
+    if [[ -z "$test_cmd" ]]; then
+        test_cmd=$(git config --file "$CONFIG_FILE" pingolight.test.command 2>/dev/null || echo "")
+    fi
+
+    if [[ -z "$test_cmd" ]]; then
+        fatal "No test command. Set one with: pingo-light config set test.command 'make test'"
+    fi
+
+    info "Running: $test_cmd"
+    if eval "$test_cmd"; then
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"test":"pass","command":"'"$(echo "$test_cmd" | json_escape)"'"}'
+        else
+            success "Tests passed."
+        fi
+        return 0
+    else
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":false,"test":"fail","command":"'"$(echo "$test_cmd" | json_escape)"'"}'
+        else
+            error "Tests failed."
+        fi
+        return 1
+    fi
+}
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 show_help() {
@@ -1954,6 +2025,7 @@ main() {
         conflict-analyze)   cmd_conflict_analyze "$@" ;;
         config)             cmd_config "$@" ;;
         history)            cmd_history "$@" ;;
+        test)               cmd_test "$@" ;;
         version|-v|--version) echo "pingo-light $VERSION" ;;
         help|-h|--help|"")    show_help ;;
         *)          fatal "Unknown command: $cmd. Run 'pingo-light --help' for usage." ;;
