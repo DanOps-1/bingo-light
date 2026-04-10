@@ -1,23 +1,38 @@
 # pingo-light
 
-Bash CLI tool for maintaining forks of open-source projects. Single file, zero dependencies beyond git + bash.
+AI-native fork maintenance tool. Single-file bash CLI + MCP server designed for LLM agents to manage upstream sync.
+
+## AI-native features
+
+- `--json` flag: structured JSON output on all commands
+- `--yes` / `-y` flag: fully non-interactive (no prompts)
+- Auto-detects non-TTY stdin → enables non-interactive mode automatically
+- `PINGO_DESCRIPTION` env var: set patch description without stdin
+- `conflict-analyze --json`: structured conflict info for AI resolution
+- MCP server: 15 tools including `pingo_conflict_resolve` (AI writes resolved content directly)
+
+## For AI agents: prefer MCP or --json
+
+When helping users with fork maintenance, use the MCP tools or CLI with `--json --yes`:
+
+```bash
+# AI-friendly: structured output, no prompts
+pingo-light status --json
+pingo-light sync --json --yes
+pingo-light conflict-analyze --json
+PINGO_DESCRIPTION="add feature X" pingo-light patch new feature-x --yes
+```
 
 ## Project structure
 
-- `pingo-light` — The entire tool (single executable bash script, ~1300 lines)
-- `mcp-server.py` — MCP tool server (zero-dep Python, wraps CLI as 13 MCP tools)
-- `install.sh` — Copies pingo-light to /usr/local/bin
-- `llms.txt` — Complete reference documentation for LLM consumption
+- `pingo-light` — The entire tool (single bash script)
+- `mcp-server.py` — MCP server (zero-dep Python 3, 15 tools)
+- `install.sh` — Copies to /usr/local/bin
+- `llms.txt` — Complete reference for LLM consumption
+- `tests/test.sh` — 50 tests
+- `completions/` — bash/zsh/fish tab completion
 
-## How it works
-
-User's customizations are maintained as a linear stack of git commits (patches) on a `pingo-patches` branch, rebased on top of an `upstream-tracking` branch that mirrors the upstream project. Each patch commit has the prefix `[pl] <name>:`. Syncing fetches upstream and rebases the patch stack. git rerere auto-remembers conflict resolutions.
-
-## MCP Server
-
-The MCP server exposes all pingo-light commands as tools that any MCP-compatible LLM can call directly. Pure Python 3 stdlib, no pip install needed.
-
-### Setup for Claude Code
+## MCP Server setup
 
 Add to `~/.claude/settings.json`:
 ```json
@@ -31,42 +46,39 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-### Available MCP Tools
+## MCP Tools (15)
 
-| Tool | Maps to |
+| Tool | Purpose |
 |------|---------|
-| `pingo_init` | `pingo-light init <url> [branch]` |
-| `pingo_status` | `pingo-light status` |
-| `pingo_sync` | `pingo-light sync [--dry-run] [--force]` |
-| `pingo_undo` | `pingo-light undo` |
-| `pingo_patch_new` | `pingo-light patch new <name>` |
-| `pingo_patch_list` | `pingo-light patch list [-v]` |
-| `pingo_patch_show` | `pingo-light patch show <target>` |
-| `pingo_patch_drop` | `pingo-light patch drop <target>` |
-| `pingo_patch_export` | `pingo-light patch export [dir]` |
-| `pingo_patch_import` | `pingo-light patch import <path>` |
-| `pingo_doctor` | `pingo-light doctor` |
-| `pingo_diff` | `pingo-light diff` |
-| `pingo_auto_sync` | `pingo-light auto-sync` |
+| `pingo_status` | JSON status: behind count, patches, conflict risk |
+| `pingo_init` | Initialize fork tracking |
+| `pingo_sync` | Rebase patches onto latest upstream |
+| `pingo_undo` | Undo last sync |
+| `pingo_patch_new` | Create named patch |
+| `pingo_patch_list` | List patch stack |
+| `pingo_patch_show` | Show patch diff |
+| `pingo_patch_drop` | Remove patch |
+| `pingo_patch_export` | Export as .patch files |
+| `pingo_patch_import` | Import .patch files |
+| `pingo_doctor` | Diagnostic check |
+| `pingo_diff` | Total diff vs upstream |
+| `pingo_auto_sync` | Generate GitHub Actions workflow |
+| `pingo_conflict_analyze` | Structured conflict info (ours/theirs/hints) |
+| `pingo_conflict_resolve` | Write resolved content, stage, continue rebase |
 
-All tools require `cwd` parameter (path to the git repo).
-
-## Development
-
-No build step. Edit `pingo-light` directly. Test by running it in a git repo.
-
-Quick test setup:
-```bash
-mkdir /tmp/test-upstream && cd /tmp/test-upstream && git init && echo "hello" > file.txt && git add -A && git commit -m "init"
-git clone /tmp/test-upstream /tmp/test-fork && cd /tmp/test-fork
-pingo-light init /tmp/test-upstream
-```
+All tools require `cwd` parameter.
 
 ## Key internals
 
-- Config: `.pingolight` file (git-config format) with section `[pingolight]`
-- Patch identification: commit messages matching `[pl] <name>: <desc>`
-- Dry-run sync: creates temp branches `pl-dryrun-$$`, cleaned up after
-- Doctor test: creates temp branch `pl-doctor-$$`, cleaned up after
-- Patch resolution: by name (exact -> partial match) or 1-based index
-- MCP server: JSON-RPC 2.0 over stdio, disables color (NO_COLOR=1) for machine output
+- Config: `.pingolight` (git-config format), excluded via `.git/info/exclude`
+- Patch ID: commit messages matching `[pl] <name>: <desc>`
+- JSON mode: `--json` suppresses all human-readable output, emits single JSON object
+- Non-interactive: `--yes` or non-TTY stdin auto-confirms all prompts
+- MCP server: JSON-RPC 2.0 over stdio, Python 3 stdlib only
+
+## Development
+
+```bash
+make test    # run 50 tests
+make lint    # shellcheck
+```
