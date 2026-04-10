@@ -1,0 +1,464 @@
+#!/usr/bin/env python3
+"""
+pingo-light MCP Server — Zero-dependency MCP tool server.
+
+Exposes pingo-light CLI commands as MCP tools so any MCP-compatible LLM client
+(Claude Code, Claude Desktop, VS Code Copilot, Cursor, etc.) can call them directly.
+
+Protocol: JSON-RPC 2.0 over stdio (MCP specification).
+Dependencies: Python 3.8+ standard library only.
+
+Usage:
+  # Run directly:
+  python3 mcp-server.py
+
+  # In Claude Code settings.json:
+  { "mcpServers": { "pingo-light": { "command": "python3", "args": ["/path/to/mcp-server.py"] } } }
+
+  # In Claude Desktop config:
+  { "mcpServers": { "pingo-light": { "command": "python3", "args": ["/path/to/mcp-server.py"] } } }
+"""
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+# ─── Tool Definitions ─────────────────────────────────────────────────────────
+
+PINGO = os.environ.get("PINGO_LIGHT_BIN", str(Path(__file__).parent / "pingo-light"))
+
+TOOLS = [
+    {
+        "name": "pingo_status",
+        "description": (
+            "Check the health of your fork: how far behind upstream, list all patches, "
+            "predict potential conflicts. Run this FIRST to understand the current state."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "description": "Path to the git repository (required)"
+                }
+            },
+            "required": ["cwd"]
+        }
+    },
+    {
+        "name": "pingo_init",
+        "description": (
+            "Initialize pingo-light in a git repository. Sets up upstream tracking, "
+            "creates patch branch, enables rerere. Run once per forked project."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "description": "Path to the git repository"
+                },
+                "upstream_url": {
+                    "type": "string",
+                    "description": "URL of the original upstream repository"
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "Upstream branch to track (default: auto-detect)"
+                }
+            },
+            "required": ["cwd", "upstream_url"]
+        }
+    },
+    {
+        "name": "pingo_patch_new",
+        "description": (
+            "Create a new patch from current changes. Each patch = one atomic customization "
+            "on top of upstream. Stage changes first (git add) or let it auto-stage everything."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "description": "Path to the git repository"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Patch name (alphanumeric, hyphens, underscores)"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Brief one-line description of the patch"
+                }
+            },
+            "required": ["cwd", "name"]
+        }
+    },
+    {
+        "name": "pingo_patch_list",
+        "description": "List all patches in the stack with stats. Use verbose=true for per-file details.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "description": "Path to the git repository"
+                },
+                "verbose": {
+                    "type": "boolean",
+                    "description": "Show per-file change details (default: false)"
+                }
+            },
+            "required": ["cwd"]
+        }
+    },
+    {
+        "name": "pingo_patch_show",
+        "description": "Show full diff and stats for a specific patch.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "description": "Path to the git repository"
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Patch name or 1-based index"
+                }
+            },
+            "required": ["cwd", "target"]
+        }
+    },
+    {
+        "name": "pingo_patch_drop",
+        "description": "Remove a patch from the stack.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "description": "Path to the git repository"
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Patch name or 1-based index"
+                }
+            },
+            "required": ["cwd", "target"]
+        }
+    },
+    {
+        "name": "pingo_patch_export",
+        "description": "Export all patches as numbered .patch files (git format-patch) plus quilt-compatible series file.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "description": "Path to the git repository"
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "Output directory (default: .pl-patches)"
+                }
+            },
+            "required": ["cwd"]
+        }
+    },
+    {
+        "name": "pingo_patch_import",
+        "description": "Import .patch file(s) into the stack.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "description": "Path to the git repository"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Path to .patch file or directory of patches"
+                }
+            },
+            "required": ["cwd", "path"]
+        }
+    },
+    {
+        "name": "pingo_sync",
+        "description": (
+            "Sync with upstream: fetch latest changes and rebase all patches. "
+            "Use dry_run=true to preview without making changes."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "description": "Path to the git repository"
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Preview only, don't modify anything (default: false)"
+                }
+            },
+            "required": ["cwd"]
+        }
+    },
+    {
+        "name": "pingo_undo",
+        "description": "Undo the last sync operation by restoring patches branch to previous state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "description": "Path to the git repository"
+                }
+            },
+            "required": ["cwd"]
+        }
+    },
+    {
+        "name": "pingo_doctor",
+        "description": (
+            "Diagnose setup issues: checks git version, rerere, upstream remote, branch structure, "
+            "and tests whether patches apply cleanly on latest upstream."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "description": "Path to the git repository"
+                }
+            },
+            "required": ["cwd"]
+        }
+    },
+    {
+        "name": "pingo_diff",
+        "description": "Show combined diff of all patches vs upstream (total fork divergence).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "description": "Path to the git repository"
+                }
+            },
+            "required": ["cwd"]
+        }
+    },
+    {
+        "name": "pingo_auto_sync",
+        "description": (
+            "Generate GitHub Actions workflow for automated daily upstream sync. "
+            "Creates .github/workflows/pingo-light-sync.yml."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "description": "Path to the git repository"
+                },
+                "schedule": {
+                    "type": "string",
+                    "enum": ["daily", "6h", "weekly"],
+                    "description": "Sync frequency (default: daily)"
+                }
+            },
+            "required": ["cwd"]
+        }
+    },
+]
+
+# ─── Command Mapping ──────────────────────────────────────────────────────────
+
+def run_pingo(args: list[str], cwd: str, input_text: str = "") -> dict:
+    """Run pingo-light CLI and return structured result."""
+    env = os.environ.copy()
+    env["NO_COLOR"] = "1"  # Disable ANSI colors for machine-readable output
+
+    try:
+        result = subprocess.run(
+            [PINGO] + args,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            input=input_text or None,
+            env=env,
+        )
+        output = result.stdout
+        if result.stderr:
+            output += "\n" + result.stderr
+        return {
+            "content": [{"type": "text", "text": output.strip()}],
+            "isError": result.returncode != 0,
+        }
+    except FileNotFoundError:
+        return {
+            "content": [{"type": "text", "text": f"pingo-light not found at: {PINGO}\nInstall: cp pingo-light /usr/local/bin/"}],
+            "isError": True,
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "content": [{"type": "text", "text": "Command timed out (120s). The operation may need manual intervention."}],
+            "isError": True,
+        }
+
+
+def handle_tool_call(name: str, arguments: dict) -> dict:
+    """Map MCP tool calls to pingo-light CLI commands."""
+    cwd = arguments.get("cwd", ".")
+
+    if name == "pingo_status":
+        return run_pingo(["status"], cwd)
+
+    elif name == "pingo_init":
+        args = ["init", arguments["upstream_url"]]
+        if arguments.get("branch"):
+            args.append(arguments["branch"])
+        return run_pingo(args, cwd, input_text="\n")  # Accept defaults
+
+    elif name == "pingo_patch_new":
+        desc = arguments.get("description", "no description")
+        return run_pingo(["patch", "new", arguments["name"]], cwd, input_text=f"{desc}\n")
+
+    elif name == "pingo_patch_list":
+        args = ["patch", "list"]
+        if arguments.get("verbose"):
+            args.append("-v")
+        return run_pingo(args, cwd)
+
+    elif name == "pingo_patch_show":
+        return run_pingo(["patch", "show", arguments["target"]], cwd)
+
+    elif name == "pingo_patch_drop":
+        return run_pingo(["patch", "drop", arguments["target"]], cwd, input_text="y\n")
+
+    elif name == "pingo_patch_export":
+        args = ["patch", "export"]
+        if arguments.get("output_dir"):
+            args.append(arguments["output_dir"])
+        return run_pingo(args, cwd)
+
+    elif name == "pingo_patch_import":
+        return run_pingo(["patch", "import", arguments["path"]], cwd)
+
+    elif name == "pingo_sync":
+        args = ["sync", "--force"]  # Skip interactive prompt
+        if arguments.get("dry_run"):
+            args = ["sync", "--dry-run"]
+        return run_pingo(args, cwd)
+
+    elif name == "pingo_undo":
+        return run_pingo(["undo"], cwd, input_text="y\n")
+
+    elif name == "pingo_doctor":
+        return run_pingo(["doctor"], cwd)
+
+    elif name == "pingo_diff":
+        return run_pingo(["diff"], cwd)
+
+    elif name == "pingo_auto_sync":
+        schedule_map = {"daily": "1", "6h": "2", "weekly": "3"}
+        choice = schedule_map.get(arguments.get("schedule", "daily"), "1")
+        return run_pingo(["auto-sync"], cwd, input_text=f"{choice}\n")
+
+    else:
+        return {
+            "content": [{"type": "text", "text": f"Unknown tool: {name}"}],
+            "isError": True,
+        }
+
+# ─── MCP JSON-RPC Protocol ───────────────────────────────────────────────────
+
+def read_message() -> dict | None:
+    """Read a JSON-RPC message from stdin (MCP stdio transport)."""
+    # MCP stdio uses Content-Length headers (like LSP)
+    headers = {}
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            return None  # EOF
+        line = line.strip()
+        if line == "":
+            break  # End of headers
+        if ":" in line:
+            key, value = line.split(":", 1)
+            headers[key.strip().lower()] = value.strip()
+
+    content_length = int(headers.get("content-length", 0))
+    if content_length == 0:
+        return None
+
+    body = sys.stdin.read(content_length)
+    return json.loads(body)
+
+
+def send_message(msg: dict):
+    """Write a JSON-RPC message to stdout (MCP stdio transport)."""
+    body = json.dumps(msg)
+    header = f"Content-Length: {len(body.encode())}\r\n\r\n"
+    sys.stdout.write(header)
+    sys.stdout.write(body)
+    sys.stdout.flush()
+
+
+def make_response(id, result):
+    return {"jsonrpc": "2.0", "id": id, "result": result}
+
+
+def make_error(id, code, message):
+    return {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}
+
+
+def main():
+    """Main MCP server loop."""
+    while True:
+        msg = read_message()
+        if msg is None:
+            break
+
+        method = msg.get("method", "")
+        id = msg.get("id")
+        params = msg.get("params", {})
+
+        if method == "initialize":
+            send_message(make_response(id, {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {
+                    "name": "pingo-light",
+                    "version": "0.1.0",
+                },
+            }))
+
+        elif method == "notifications/initialized":
+            pass  # No response needed for notifications
+
+        elif method == "tools/list":
+            send_message(make_response(id, {"tools": TOOLS}))
+
+        elif method == "tools/call":
+            tool_name = params.get("name", "")
+            arguments = params.get("arguments", {})
+            result = handle_tool_call(tool_name, arguments)
+            send_message(make_response(id, result))
+
+        elif method == "ping":
+            send_message(make_response(id, {}))
+
+        elif id is not None:
+            send_message(make_error(id, -32601, f"Method not found: {method}"))
+        # else: unknown notification, ignore
+
+
+if __name__ == "__main__":
+    main()
