@@ -34,3 +34,4 @@ test: ## Run test suite
 
 lint: ## Run shellcheck (if installed)
 	@command -v shellcheck >/dev/null 2>&1 && shellcheck pingo-light || echo "shellcheck not found, skipping"
+# test comment
