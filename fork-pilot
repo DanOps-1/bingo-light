@@ -1,0 +1,1281 @@
+#!/usr/bin/env bash
+# fork-pilot — Dead-simple fork maintenance for everyone.
+# https://github.com/user/fork-pilot
+#
+# Manages your customizations as a clean patch stack on top of upstream,
+# so syncing with upstream is always a one-command operation.
+#
+# License: MIT
+
+set -euo pipefail
+
+VERSION="0.1.0"
+CONFIG_FILE=".forkpilot"
+PATCH_PREFIX="[fp]"
+
+# ─── Colors & Output ──────────────────────────────────────────────────────────
+
+if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
+    RED='\033[0;31m'    GREEN='\033[0;32m'  YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'   MAGENTA='\033[0;35m' CYAN='\033[0;36m'
+    BOLD='\033[1m'      DIM='\033[2m'       RESET='\033[0m'
+else
+    RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' CYAN='' BOLD='' DIM='' RESET=''
+fi
+
+info()    { echo -e "${BLUE}>${RESET} $*"; }
+success() { echo -e "${GREEN}OK${RESET} $*"; }
+warn()    { echo -e "${YELLOW}!${RESET} $*"; }
+error()   { echo -e "${RED}x${RESET} $*" >&2; }
+fatal()   { error "$@"; exit 1; }
+header()  { echo -e "\n${BOLD}$*${RESET}"; }
+dim()     { echo -e "${DIM}$*${RESET}"; }
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+ensure_git_repo() {
+    git rev-parse --is-inside-work-tree &>/dev/null || fatal "Not a git repository. Run this inside a git repo."
+}
+
+ensure_initialized() {
+    ensure_git_repo
+    [[ -f "$CONFIG_FILE" ]] || fatal "fork-pilot not initialized. Run: ${BOLD}fork-pilot init <upstream-url>${RESET}"
+}
+
+load_config() {
+    ensure_initialized
+    UPSTREAM_URL=$(git config --file "$CONFIG_FILE" forkpilot.upstream-url 2>/dev/null || echo "")
+    UPSTREAM_BRANCH=$(git config --file "$CONFIG_FILE" forkpilot.upstream-branch 2>/dev/null || echo "main")
+    PATCHES_BRANCH=$(git config --file "$CONFIG_FILE" forkpilot.patches-branch 2>/dev/null || echo "fork-patches")
+    TRACKING_BRANCH=$(git config --file "$CONFIG_FILE" forkpilot.tracking-branch 2>/dev/null || echo "upstream-tracking")
+}
+
+save_config() {
+    git config --file "$CONFIG_FILE" forkpilot.upstream-url "$UPSTREAM_URL"
+    git config --file "$CONFIG_FILE" forkpilot.upstream-branch "$UPSTREAM_BRANCH"
+    git config --file "$CONFIG_FILE" forkpilot.patches-branch "$PATCHES_BRANCH"
+    git config --file "$CONFIG_FILE" forkpilot.tracking-branch "$TRACKING_BRANCH"
+}
+
+current_branch() {
+    git branch --show-current
+}
+
+ensure_clean_tree() {
+    if ! git diff --quiet HEAD 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+        fatal "Working tree is dirty. Commit or stash your changes first."
+    fi
+}
+
+count_patches() {
+    local base
+    base=$(git merge-base "$TRACKING_BRANCH" "$PATCHES_BRANCH" 2>/dev/null) || return 0
+    git rev-list --count "$base..$PATCHES_BRANCH" 2>/dev/null || echo 0
+}
+
+# Get the merge base between tracking and patches branches
+patches_base() {
+    git merge-base "$TRACKING_BRANCH" "$PATCHES_BRANCH" 2>/dev/null
+}
+
+# ─── Command: init ────────────────────────────────────────────────────────────
+
+cmd_init() {
+    local upstream_url="${1:-}"
+    local upstream_branch="${2:-}"
+
+    if [[ -z "$upstream_url" ]]; then
+        echo -e "${BOLD}Usage:${RESET} fork-pilot init <upstream-url> [upstream-branch]"
+        echo ""
+        echo "  Initialize fork-pilot in the current git repository."
+        echo ""
+        echo "  upstream-url       URL of the original upstream repository"
+        echo "  upstream-branch    Branch to track (default: auto-detect, fallback: main)"
+        echo ""
+        echo -e "${DIM}Example:${RESET}"
+        echo "  fork-pilot init https://github.com/original/project.git"
+        echo "  fork-pilot init https://github.com/original/project.git develop"
+        return 1
+    fi
+
+    ensure_git_repo
+
+    # Check if already initialized
+    if [[ -f "$CONFIG_FILE" ]]; then
+        warn "fork-pilot is already initialized in this repo."
+        echo -n "  Re-initialize? [y/N] "
+        read -r answer
+        [[ "$answer" =~ ^[Yy] ]] || return 0
+    fi
+
+    header "Initializing fork-pilot..."
+
+    # 1. Add upstream remote
+    if git remote get-url upstream &>/dev/null; then
+        info "Updating existing 'upstream' remote..."
+        git remote set-url upstream "$upstream_url"
+    else
+        info "Adding 'upstream' remote..."
+        git remote add upstream "$upstream_url"
+    fi
+
+    # 2. Fetch upstream
+    info "Fetching upstream..."
+    if ! git fetch upstream 2>&1; then
+        fatal "Failed to fetch upstream. Check the URL: $upstream_url"
+    fi
+
+    # 3. Auto-detect upstream branch if not specified
+    if [[ -z "$upstream_branch" ]]; then
+        # Try to detect the default branch
+        upstream_branch=$(git remote show upstream 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
+        if [[ -z "$upstream_branch" || "$upstream_branch" == "(unknown)" ]]; then
+            # Fallback: check for common branch names
+            for candidate in main master develop; do
+                if git rev-parse --verify "upstream/$candidate" &>/dev/null; then
+                    upstream_branch="$candidate"
+                    break
+                fi
+            done
+        fi
+        upstream_branch="${upstream_branch:-main}"
+        info "Auto-detected upstream branch: ${BOLD}$upstream_branch${RESET}"
+    fi
+
+    # Verify upstream branch exists
+    if ! git rev-parse --verify "upstream/$upstream_branch" &>/dev/null; then
+        fatal "Branch 'upstream/$upstream_branch' not found. Available branches:"
+        git branch -r | grep 'upstream/' | sed 's/^/  /'
+        return 1
+    fi
+
+    # 4. Set config
+    UPSTREAM_URL="$upstream_url"
+    UPSTREAM_BRANCH="$upstream_branch"
+    PATCHES_BRANCH="fork-patches"
+    TRACKING_BRANCH="upstream-tracking"
+
+    # 5. Enable rerere (remember conflict resolutions)
+    info "Enabling git rerere (auto-remembers conflict resolutions)..."
+    git config rerere.enabled true
+    git config rerere.autoupdate true
+
+    # 6. Create tracking branch (mirrors upstream exactly)
+    info "Creating tracking branch '${TRACKING_BRANCH}'..."
+    git branch -f "$TRACKING_BRANCH" "upstream/$UPSTREAM_BRANCH"
+
+    # 7. Create patches branch (where your customizations go)
+    local current
+    current=$(current_branch)
+
+    if git rev-parse --verify "$PATCHES_BRANCH" &>/dev/null; then
+        warn "Patches branch '${PATCHES_BRANCH}' already exists, keeping it."
+    else
+        # If current branch has commits ahead of upstream, adopt them as patches
+        local ahead=0
+        local merge_base
+        if merge_base=$(git merge-base "upstream/$UPSTREAM_BRANCH" HEAD 2>/dev/null); then
+            ahead=$(git rev-list --count "$merge_base..HEAD")
+        fi
+
+        if [[ "$ahead" -gt 0 ]]; then
+            info "Found ${BOLD}${ahead}${RESET} commits ahead of upstream on current branch."
+            echo -n "  Adopt these as your patch stack? [Y/n] "
+            read -r answer
+            if [[ ! "$answer" =~ ^[Nn] ]]; then
+                git branch "$PATCHES_BRANCH" HEAD
+                info "Adopted current commits as patches."
+            else
+                git branch "$PATCHES_BRANCH" "$TRACKING_BRANCH"
+            fi
+        else
+            git branch "$PATCHES_BRANCH" "$TRACKING_BRANCH"
+        fi
+    fi
+
+    # 8. Save config
+    save_config
+
+    # 9. Switch to patches branch
+    if [[ "$(current_branch)" != "$PATCHES_BRANCH" ]]; then
+        info "Switching to patches branch '${PATCHES_BRANCH}'..."
+        git checkout "$PATCHES_BRANCH" 2>/dev/null
+    fi
+
+    echo ""
+    success "fork-pilot initialized!"
+    echo ""
+    echo -e "  ${DIM}Upstream :${RESET} $UPSTREAM_URL ($UPSTREAM_BRANCH)"
+    echo -e "  ${DIM}Tracking :${RESET} $TRACKING_BRANCH (mirrors upstream, don't touch)"
+    echo -e "  ${DIM}Patches  :${RESET} $PATCHES_BRANCH (your customizations go here)"
+    echo ""
+    echo -e "  ${BOLD}Next steps:${RESET}"
+    echo -e "  1. Make your changes, then: ${CYAN}fork-pilot patch new <name>${RESET}"
+    echo -e "  2. To sync with upstream:   ${CYAN}fork-pilot sync${RESET}"
+    echo -e "  3. To check health:         ${CYAN}fork-pilot status${RESET}"
+}
+
+# ─── Command: patch ───────────────────────────────────────────────────────────
+
+cmd_patch() {
+    local subcmd="${1:-}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        new|add|create)  patch_new "$@" ;;
+        list|ls)         patch_list "$@" ;;
+        drop|rm|remove)  patch_drop "$@" ;;
+        edit)            patch_edit "$@" ;;
+        export)          patch_export "$@" ;;
+        import)          patch_import "$@" ;;
+        show)            patch_show "$@" ;;
+        reorder)         patch_reorder "$@" ;;
+        *)
+            echo -e "${BOLD}Usage:${RESET} fork-pilot patch <command>"
+            echo ""
+            echo "Commands:"
+            echo -e "  ${CYAN}new${RESET} <name>          Create a new patch from staged/unstaged changes"
+            echo -e "  ${CYAN}list${RESET}                List all patches in the stack"
+            echo -e "  ${CYAN}show${RESET} <name|index>   Show patch details and diff"
+            echo -e "  ${CYAN}edit${RESET} <name|index>   Amend an existing patch"
+            echo -e "  ${CYAN}drop${RESET} <name|index>   Remove a patch from the stack"
+            echo -e "  ${CYAN}export${RESET} [dir]        Export all patches as .patch files"
+            echo -e "  ${CYAN}import${RESET} <file>       Import a .patch file into the stack"
+            echo -e "  ${CYAN}reorder${RESET}             Interactively reorder patches"
+            echo ""
+            echo -e "${DIM}Example:${RESET}"
+            echo "  fork-pilot patch new add-custom-auth"
+            echo "  fork-pilot patch list"
+            echo "  fork-pilot patch export ./my-patches/"
+            return 1
+            ;;
+    esac
+}
+
+patch_new() {
+    load_config
+    local name="${1:-}"
+
+    if [[ -z "$name" ]]; then
+        echo -e "${BOLD}Usage:${RESET} fork-pilot patch new <name>"
+        echo ""
+        echo "  Create a new patch. If you have staged changes, they become the patch."
+        echo "  If nothing is staged, ALL unstaged changes are included."
+        echo ""
+        echo -e "${DIM}Examples:${RESET}"
+        echo "  fork-pilot patch new fix-login-bug"
+        echo "  fork-pilot patch new add-dark-mode"
+        return 1
+    fi
+
+    # Validate name (alphanumeric, hyphens, underscores)
+    if [[ ! "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+        fatal "Invalid patch name. Use letters, numbers, hyphens, underscores. Must start with a letter or number."
+    fi
+
+    # Check for duplicate patch name
+    local base
+    if base=$(patches_base); then
+        if git log --format="%s" "$base..$PATCHES_BRANCH" 2>/dev/null | grep -qF "$PATCH_PREFIX $name:"; then
+            fatal "A patch named '${name}' already exists. Use a different name or drop the existing one."
+        fi
+    fi
+
+    # Ensure we're on the patches branch
+    if [[ "$(current_branch)" != "$PATCHES_BRANCH" ]]; then
+        info "Switching to patches branch '${PATCHES_BRANCH}'..."
+        git checkout "$PATCHES_BRANCH"
+    fi
+
+    # Check if there are changes to commit
+    local has_staged has_unstaged
+    has_staged=$(git diff --cached --quiet 2>/dev/null && echo "no" || echo "yes")
+    has_unstaged=$(git diff --quiet 2>/dev/null && echo "no" || echo "yes")
+    local has_untracked
+    has_untracked=$(git ls-files --others --exclude-standard | head -1)
+
+    if [[ "$has_staged" == "no" && "$has_unstaged" == "no" && -z "$has_untracked" ]]; then
+        fatal "No changes to create a patch from. Make some changes first!"
+    fi
+
+    # If nothing is staged, stage everything
+    if [[ "$has_staged" == "no" ]]; then
+        if [[ "$has_unstaged" == "yes" || -n "$has_untracked" ]]; then
+            info "No staged changes — staging all modifications and new files..."
+            git add -A
+        fi
+    else
+        info "Using staged changes only. Unstaged changes will remain in the working tree."
+    fi
+
+    # Prompt for description
+    echo -n "  Brief description (optional, Enter to skip): "
+    read -r description
+
+    # Build commit message
+    local commit_msg="$PATCH_PREFIX $name: ${description:-no description}"
+
+    # Commit
+    git commit -m "$commit_msg"
+    local short_hash
+    short_hash=$(git rev-parse --short HEAD)
+
+    echo ""
+    success "Patch '${BOLD}${name}${RESET}' created (${DIM}${short_hash}${RESET})"
+
+    local total
+    total=$(count_patches)
+    dim "  Patch stack: $total patch(es) total"
+}
+
+patch_list() {
+    load_config
+
+    local base
+    base=$(patches_base) || {
+        info "No patches yet. Create one with: ${CYAN}fork-pilot patch new <name>${RESET}"
+        return 0
+    }
+
+    local commits
+    commits=$(git rev-list --reverse "$base..$PATCHES_BRANCH" 2>/dev/null)
+
+    if [[ -z "$commits" ]]; then
+        info "No patches yet. Create one with: ${CYAN}fork-pilot patch new <name>${RESET}"
+        return 0
+    fi
+
+    local verbose="${1:-}"
+
+    header "Patch Stack (bottom = applied first)"
+    echo ""
+
+    local index=1
+    local total
+    total=$(echo "$commits" | wc -l)
+
+    while IFS= read -r hash; do
+        local short_hash subject files_changed insertions deletions stat_summary
+        short_hash=$(git rev-parse --short "$hash")
+        subject=$(git log -1 --format="%s" "$hash")
+
+        # Parse patch name from commit message
+        local patch_name=""
+        if [[ "$subject" =~ ^\[fp\]\ ([^:]+): ]]; then
+            patch_name="${BASH_REMATCH[1]}"
+        fi
+
+        # Get change stats
+        files_changed=$(git diff-tree --no-commit-id -r "$hash" | wc -l)
+        stat_summary=$(git diff-tree --no-commit-id --shortstat "$hash" 2>/dev/null | sed 's/^ //')
+
+        # Color the index
+        printf "  ${CYAN}%2d${RESET} " "$index"
+
+        # Color the patch name
+        if [[ -n "$patch_name" ]]; then
+            echo -e "${BOLD}${patch_name}${RESET} ${DIM}(${short_hash})${RESET}"
+        else
+            echo -e "${subject} ${DIM}(${short_hash})${RESET}"
+        fi
+
+        # Show stats
+        if [[ -n "$stat_summary" ]]; then
+            echo -e "     ${DIM}${stat_summary}${RESET}"
+        fi
+
+        # In verbose mode, show changed files
+        if [[ "$verbose" == "-v" || "$verbose" == "--verbose" ]]; then
+            git diff-tree --no-commit-id -r --name-status "$hash" | while read -r status file; do
+                case "$status" in
+                    A) echo -e "     ${GREEN}+ ${file}${RESET}" ;;
+                    D) echo -e "     ${RED}- ${file}${RESET}" ;;
+                    M) echo -e "     ${YELLOW}~ ${file}${RESET}" ;;
+                    *) echo -e "     ${DIM}${status} ${file}${RESET}" ;;
+                esac
+            done
+        fi
+
+        ((index++))
+    done <<< "$commits"
+
+    echo ""
+    dim "  Total: $total patch(es)"
+    dim "  Use 'fork-pilot patch list -v' for file details"
+}
+
+patch_show() {
+    load_config
+    local target="${1:-}"
+
+    if [[ -z "$target" ]]; then
+        echo -e "${BOLD}Usage:${RESET} fork-pilot patch show <name|index>"
+        return 1
+    fi
+
+    local hash
+    hash=$(resolve_patch "$target") || return 1
+
+    git show "$hash" --stat --patch
+}
+
+patch_drop() {
+    load_config
+    local target="${1:-}"
+
+    if [[ -z "$target" ]]; then
+        echo -e "${BOLD}Usage:${RESET} fork-pilot patch drop <name|index>"
+        echo ""
+        echo "  Remove a patch from the stack."
+        echo "  Use 'fork-pilot patch list' to see available patches."
+        return 1
+    fi
+
+    ensure_clean_tree
+
+    local hash
+    hash=$(resolve_patch "$target") || return 1
+
+    local subject
+    subject=$(git log -1 --format="%s" "$hash")
+
+    echo -e "  About to drop: ${BOLD}${subject}${RESET}"
+    echo -n "  Are you sure? [y/N] "
+    read -r answer
+    [[ "$answer" =~ ^[Yy] ]] || { info "Cancelled."; return 0; }
+
+    # Ensure we're on the patches branch
+    [[ "$(current_branch)" == "$PATCHES_BRANCH" ]] || git checkout "$PATCHES_BRANCH"
+
+    # Use rebase to drop the specific commit
+    if git rebase --onto "${hash}^" "$hash" "$PATCHES_BRANCH" 2>/dev/null; then
+        success "Patch dropped."
+    else
+        git rebase --abort 2>/dev/null || true
+        fatal "Failed to drop patch. There may be dependencies between patches."
+    fi
+}
+
+patch_edit() {
+    load_config
+    local target="${1:-}"
+
+    if [[ -z "$target" ]]; then
+        echo -e "${BOLD}Usage:${RESET} fork-pilot patch edit <name|index>"
+        echo ""
+        echo "  Stage your changes, then run this to fold them into an existing patch."
+        return 1
+    fi
+
+    local hash
+    hash=$(resolve_patch "$target") || return 1
+
+    local has_staged
+    has_staged=$(git diff --cached --quiet 2>/dev/null && echo "no" || echo "yes")
+
+    if [[ "$has_staged" == "no" ]]; then
+        fatal "No staged changes. Stage your fixes first with 'git add', then run this command."
+    fi
+
+    local subject
+    subject=$(git log -1 --format="%s" "$hash")
+    info "Folding staged changes into: ${BOLD}${subject}${RESET}"
+
+    # Create a fixup commit and auto-squash
+    git commit --fixup="$hash"
+
+    # Non-interactive rebase with autosquash
+    local base
+    base=$(patches_base)
+    GIT_SEQUENCE_EDITOR=true git rebase --autosquash "$base" 2>/dev/null || {
+        warn "Rebase conflict while editing patch. Resolve conflicts, then:"
+        echo "  git add <files>"
+        echo "  git rebase --continue"
+        return 1
+    }
+
+    success "Patch updated."
+}
+
+patch_export() {
+    load_config
+    local output_dir="${1:-.fp-patches}"
+
+    local base
+    base=$(patches_base) || {
+        info "No patches to export."
+        return 0
+    }
+
+    local count
+    count=$(git rev-list --count "$base..$PATCHES_BRANCH")
+
+    if [[ "$count" -eq 0 ]]; then
+        info "No patches to export."
+        return 0
+    fi
+
+    mkdir -p "$output_dir"
+
+    info "Exporting $count patch(es) to ${BOLD}${output_dir}/${RESET}..."
+
+    # Generate numbered patch files
+    git format-patch --numbered --output-directory "$output_dir" "$base..$PATCHES_BRANCH" >/dev/null
+
+    # Also create a series file (quilt-compatible)
+    ls "$output_dir"/*.patch 2>/dev/null | sort | xargs -I{} basename {} > "$output_dir/series"
+
+    success "Exported $count patch(es)."
+    echo ""
+    ls -1 "$output_dir"/*.patch | while read -r f; do
+        dim "  $(basename "$f")"
+    done
+}
+
+patch_import() {
+    load_config
+    local patch_file="${1:-}"
+
+    if [[ -z "$patch_file" ]]; then
+        echo -e "${BOLD}Usage:${RESET} fork-pilot patch import <file.patch>"
+        echo ""
+        echo "  Import a .patch file (or directory of patches) into the stack."
+        return 1
+    fi
+
+    # Ensure we're on patches branch
+    [[ "$(current_branch)" == "$PATCHES_BRANCH" ]] || git checkout "$PATCHES_BRANCH"
+
+    if [[ -d "$patch_file" ]]; then
+        # Import all patches from directory
+        local series_file="$patch_file/series"
+        if [[ -f "$series_file" ]]; then
+            info "Importing patches in series order..."
+            while IFS= read -r p; do
+                [[ -n "$p" && ! "$p" =~ ^# ]] || continue
+                info "  Applying: $p"
+                git am "$patch_file/$p" || {
+                    warn "Failed to apply $p. Run 'git am --abort' to undo, or resolve and 'git am --continue'."
+                    return 1
+                }
+            done < "$series_file"
+        else
+            info "No series file found, importing in alphabetical order..."
+            for p in "$patch_file"/*.patch; do
+                info "  Applying: $(basename "$p")"
+                git am "$p" || {
+                    warn "Failed to apply $(basename "$p"). Run 'git am --abort' to undo."
+                    return 1
+                }
+            done
+        fi
+    else
+        # Import single patch
+        [[ -f "$patch_file" ]] || fatal "File not found: $patch_file"
+        info "Applying: $(basename "$patch_file")"
+        git am "$patch_file" || {
+            warn "Failed to apply patch. Run 'git am --abort' to undo."
+            return 1
+        }
+    fi
+
+    success "Import complete."
+}
+
+patch_reorder() {
+    load_config
+    ensure_clean_tree
+
+    local base
+    base=$(patches_base) || {
+        info "No patches to reorder."
+        return 0
+    }
+
+    local count
+    count=$(git rev-list --count "$base..$PATCHES_BRANCH")
+    [[ "$count" -gt 1 ]] || { info "Only one patch, nothing to reorder."; return 0; }
+
+    info "Opening editor to reorder patches..."
+    info "Reorder the 'pick' lines. Save and close to apply. Delete a line to drop that patch."
+    echo ""
+
+    GIT_SEQUENCE_EDITOR="${EDITOR:-vi}" git rebase -i "$base" 2>/dev/null || {
+        warn "Rebase interrupted. Resolve any conflicts, then 'git rebase --continue'."
+        return 1
+    }
+
+    success "Patches reordered."
+}
+
+# Resolve a patch by name or index to its commit hash
+resolve_patch() {
+    local target="$1"
+    local base
+    base=$(patches_base) || { error "No patches found."; return 1; }
+
+    local commits
+    commits=$(git rev-list --reverse "$base..$PATCHES_BRANCH" 2>/dev/null)
+
+    if [[ -z "$commits" ]]; then
+        error "No patches found."
+        return 1
+    fi
+
+    # Try as index first
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+        local hash
+        hash=$(echo "$commits" | sed -n "${target}p")
+        if [[ -n "$hash" ]]; then
+            echo "$hash"
+            return 0
+        fi
+        error "Patch index $target out of range."
+        return 1
+    fi
+
+    # Try as name
+    while IFS= read -r hash; do
+        local subject
+        subject=$(git log -1 --format="%s" "$hash")
+        if [[ "$subject" == *"$PATCH_PREFIX $target:"* ]]; then
+            echo "$hash"
+            return 0
+        fi
+    done <<< "$commits"
+
+    # Try as partial match
+    while IFS= read -r hash; do
+        local subject
+        subject=$(git log -1 --format="%s" "$hash")
+        if [[ "$subject" == *"$target"* ]]; then
+            echo "$hash"
+            return 0
+        fi
+    done <<< "$commits"
+
+    error "Patch '${target}' not found. Use 'fork-pilot patch list' to see available patches."
+    return 1
+}
+
+# ─── Command: sync ────────────────────────────────────────────────────────────
+
+cmd_sync() {
+    load_config
+
+    local dry_run=false
+    local force=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run|-n) dry_run=true ;;
+            --force|-f)   force=true ;;
+            --help|-h)
+                echo -e "${BOLD}Usage:${RESET} fork-pilot sync [options]"
+                echo ""
+                echo "Options:"
+                echo "  --dry-run, -n   Preview what would happen without making changes"
+                echo "  --force, -f     Skip confirmation prompt"
+                echo ""
+                return 0
+                ;;
+            *) fatal "Unknown option: $1" ;;
+        esac
+        shift
+    done
+
+    ensure_clean_tree
+
+    header "Syncing with upstream..."
+    echo ""
+
+    # 1. Fetch upstream
+    info "Fetching upstream ($UPSTREAM_URL)..."
+    git fetch upstream 2>&1 || fatal "Failed to fetch upstream."
+
+    # 2. Check how far behind we are
+    local tracking_head upstream_head
+    tracking_head=$(git rev-parse "$TRACKING_BRANCH" 2>/dev/null)
+    upstream_head=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null)
+
+    if [[ "$tracking_head" == "$upstream_head" ]]; then
+        success "Already up to date with upstream."
+        return 0
+    fi
+
+    local behind
+    behind=$(git rev-list --count "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH")
+    local ahead_count
+    ahead_count=$(git rev-list --count "upstream/$UPSTREAM_BRANCH..$TRACKING_BRANCH")
+
+    info "Upstream has ${BOLD}${behind}${RESET} new commit(s)."
+
+    local patch_count
+    patch_count=$(count_patches)
+    info "You have ${BOLD}${patch_count}${RESET} patch(es) to rebase."
+
+    # 3. Dry run: test if rebase would succeed
+    if [[ "$dry_run" == true ]]; then
+        header "Dry run: testing rebase..."
+        echo ""
+
+        # Create a temporary branch to test
+        local tmp_branch="fp-dryrun-$$"
+        git branch "$tmp_branch" "$PATCHES_BRANCH" 2>/dev/null
+
+        # Update tracking to test against
+        local tmp_tracking="fp-dryrun-tracking-$$"
+        git branch "$tmp_tracking" "upstream/$UPSTREAM_BRANCH" 2>/dev/null
+
+        if git rebase --onto "$tmp_tracking" "$TRACKING_BRANCH" "$tmp_branch" 2>/dev/null; then
+            success "Dry run: rebase would succeed cleanly!"
+        else
+            warn "Dry run: rebase would have conflicts."
+            echo ""
+            # Show which files conflict
+            local conflicted
+            conflicted=$(git diff --name-only --diff-filter=U 2>/dev/null)
+            if [[ -n "$conflicted" ]]; then
+                echo -e "  ${RED}Conflicted files:${RESET}"
+                echo "$conflicted" | while read -r f; do echo -e "    ${RED}${f}${RESET}"; done
+            fi
+            git rebase --abort 2>/dev/null || true
+        fi
+
+        # Cleanup
+        git checkout "$PATCHES_BRANCH" 2>/dev/null || true
+        git branch -D "$tmp_branch" 2>/dev/null || true
+        git branch -D "$tmp_tracking" 2>/dev/null || true
+        return 0
+    fi
+
+    # 4. Confirm
+    if [[ "$force" != true ]]; then
+        echo ""
+        echo -e "  This will rebase your ${BOLD}${patch_count}${RESET} patch(es) onto ${BOLD}${behind}${RESET} new upstream commit(s)."
+        echo -n "  Proceed? [Y/n] "
+        read -r answer
+        [[ "$answer" =~ ^[Nn] ]] && { info "Cancelled."; return 0; }
+    fi
+
+    echo ""
+
+    # 5. Ensure we're on the patches branch
+    [[ "$(current_branch)" == "$PATCHES_BRANCH" ]] || git checkout "$PATCHES_BRANCH"
+
+    # 6. Save current state for rollback
+    local saved_head
+    saved_head=$(git rev-parse HEAD)
+    local saved_tracking
+    saved_tracking=$(git rev-parse "$TRACKING_BRANCH")
+
+    # 7. Update tracking branch
+    info "Updating tracking branch..."
+    git branch -f "$TRACKING_BRANCH" "upstream/$UPSTREAM_BRANCH"
+
+    # 8. Rebase patches
+    info "Rebasing patches onto new upstream..."
+    echo ""
+
+    if git rebase --onto "$TRACKING_BRANCH" "$saved_tracking" "$PATCHES_BRANCH" 2>&1; then
+        echo ""
+        success "Sync complete! All ${patch_count} patch(es) rebased cleanly."
+
+        # Show summary
+        local new_behind
+        new_behind=$(git rev-list --count "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo 0)
+        if [[ "$new_behind" -eq 0 ]]; then
+            dim "  You are now up to date with upstream."
+        fi
+    else
+        echo ""
+        warn "Rebase conflict detected!"
+        echo ""
+        echo -e "  ${BOLD}What to do:${RESET}"
+        echo ""
+        echo "  1. Fix the conflicts in the listed files"
+        echo "  2. Stage the fixes:  git add <files>"
+        echo "  3. Continue rebase:  git rebase --continue"
+        echo "  4. Repeat until done"
+        echo ""
+        echo -e "  ${BOLD}Or to abort:${RESET}"
+        echo "  git rebase --abort"
+        echo "  git branch -f $TRACKING_BRANCH $saved_tracking"
+        echo ""
+        echo -e "  ${DIM}Tip: git rerere is enabled, so resolved conflicts are remembered"
+        echo -e "  for next time. You only solve each conflict once!${RESET}"
+        return 1
+    fi
+}
+
+# ─── Command: status ──────────────────────────────────────────────────────────
+
+cmd_status() {
+    load_config
+
+    header "fork-pilot status"
+    echo ""
+
+    # Upstream info
+    echo -e "  ${BOLD}Upstream:${RESET}  $UPSTREAM_URL"
+    echo -e "  ${BOLD}Branch:${RESET}   $UPSTREAM_BRANCH"
+    echo -e "  ${BOLD}Current:${RESET}  $(current_branch)"
+    echo ""
+
+    # Fetch upstream (silently, just for freshness)
+    git fetch upstream 2>/dev/null || warn "Could not fetch upstream (offline?)"
+
+    # Upstream drift
+    local tracking_head upstream_head
+    tracking_head=$(git rev-parse "$TRACKING_BRANCH" 2>/dev/null)
+    upstream_head=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null)
+
+    if [[ "$tracking_head" == "$upstream_head" ]]; then
+        echo -e "  ${GREEN}Up to date with upstream${RESET}"
+    else
+        local behind
+        behind=$(git rev-list --count "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "?")
+        echo -e "  ${YELLOW}${behind} commit(s) behind upstream${RESET}"
+
+        # Show time since last sync
+        local last_sync_date
+        last_sync_date=$(git log -1 --format="%cr" "$TRACKING_BRANCH" 2>/dev/null)
+        dim "  Last synced: $last_sync_date"
+    fi
+    echo ""
+
+    # Patch stack
+    local base patch_count
+    if base=$(patches_base); then
+        patch_count=$(git rev-list --count "$base..$PATCHES_BRANCH")
+    else
+        patch_count=0
+    fi
+
+    echo -e "  ${BOLD}Patches:${RESET} $patch_count"
+    echo ""
+
+    if [[ "$patch_count" -gt 0 ]]; then
+        local index=1
+        local commits
+        commits=$(git rev-list --reverse "$base..$PATCHES_BRANCH")
+
+        while IFS= read -r hash; do
+            local short_hash subject files_count
+            short_hash=$(git rev-parse --short "$hash")
+            subject=$(git log -1 --format="%s" "$hash")
+            files_count=$(git diff-tree --no-commit-id -r "$hash" | wc -l)
+
+            printf "  ${CYAN}%2d${RESET} %-50s ${DIM}%s  %d file(s)${RESET}\n" \
+                "$index" "$subject" "$short_hash" "$files_count"
+            ((index++))
+        done <<< "$commits"
+        echo ""
+    fi
+
+    # Check for potential conflicts (quick heuristic)
+    if [[ "$tracking_head" != "$upstream_head" && "$patch_count" -gt 0 ]]; then
+        # Check if files touched by patches were also changed upstream
+        local patch_files upstream_files overlap
+        patch_files=$(git diff --name-only "$base..$PATCHES_BRANCH" 2>/dev/null | sort)
+        upstream_files=$(git diff --name-only "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH" 2>/dev/null | sort)
+
+        if [[ -n "$patch_files" && -n "$upstream_files" ]]; then
+            overlap=$(comm -12 <(echo "$patch_files") <(echo "$upstream_files"))
+            if [[ -n "$overlap" ]]; then
+                echo -e "  ${YELLOW}Potential conflict risk:${RESET} These files were changed both by you and upstream:"
+                echo "$overlap" | while read -r f; do
+                    echo -e "    ${YELLOW}${f}${RESET}"
+                done
+                echo ""
+                echo -e "  ${DIM}Run 'fork-pilot sync --dry-run' to test before syncing.${RESET}"
+                echo ""
+            else
+                echo -e "  ${GREEN}No overlap${RESET} between your patches and upstream changes."
+                dim "  Sync should be clean."
+                echo ""
+            fi
+        fi
+    fi
+
+    # rerere stats
+    local rerere_count
+    rerere_count=$(find .git/rr-cache -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)
+    if [[ "$rerere_count" -gt 0 ]]; then
+        dim "  rerere: $rerere_count recorded resolution(s) (conflicts auto-resolved on repeat)"
+    fi
+}
+
+# ─── Command: doctor ──────────────────────────────────────────────────────────
+
+cmd_doctor() {
+    load_config
+
+    header "fork-pilot doctor"
+    echo ""
+
+    local issues=0
+
+    # Check git version
+    local git_ver
+    git_ver=$(git --version | awk '{print $3}')
+    echo -e "  git version: ${GREEN}${git_ver}${RESET}"
+
+    # Check rerere
+    local rerere_enabled
+    rerere_enabled=$(git config rerere.enabled 2>/dev/null || echo "false")
+    if [[ "$rerere_enabled" == "true" ]]; then
+        echo -e "  rerere: ${GREEN}enabled${RESET}"
+    else
+        echo -e "  rerere: ${RED}disabled${RESET} (run: git config rerere.enabled true)"
+        ((issues++))
+    fi
+
+    # Check upstream remote
+    local upstream_url_actual
+    upstream_url_actual=$(git remote get-url upstream 2>/dev/null || echo "")
+    if [[ -n "$upstream_url_actual" ]]; then
+        echo -e "  upstream remote: ${GREEN}configured${RESET} ($upstream_url_actual)"
+    else
+        echo -e "  upstream remote: ${RED}not found${RESET}"
+        ((issues++))
+    fi
+
+    # Check tracking branch
+    if git rev-parse --verify "$TRACKING_BRANCH" &>/dev/null; then
+        echo -e "  tracking branch ($TRACKING_BRANCH): ${GREEN}exists${RESET}"
+    else
+        echo -e "  tracking branch ($TRACKING_BRANCH): ${RED}missing${RESET}"
+        ((issues++))
+    fi
+
+    # Check patches branch
+    if git rev-parse --verify "$PATCHES_BRANCH" &>/dev/null; then
+        echo -e "  patches branch ($PATCHES_BRANCH): ${GREEN}exists${RESET}"
+    else
+        echo -e "  patches branch ($PATCHES_BRANCH): ${RED}missing${RESET}"
+        ((issues++))
+    fi
+
+    # Check if patches apply cleanly on current upstream
+    echo ""
+    if [[ "$issues" -eq 0 ]]; then
+        info "Testing patch stack integrity..."
+
+        local base
+        base=$(patches_base) || { success "No patches to test."; return 0; }
+
+        local patch_count
+        patch_count=$(git rev-list --count "$base..$PATCHES_BRANCH")
+
+        if [[ "$patch_count" -eq 0 ]]; then
+            success "No patches to test."
+        else
+            # Quick test: try rebase on a temp branch
+            local tmp_branch="fp-doctor-$$"
+            git branch "$tmp_branch" "$PATCHES_BRANCH" 2>/dev/null
+
+            local current_tracking
+            current_tracking=$(git rev-parse "$TRACKING_BRANCH")
+
+            if git rebase --onto "upstream/$UPSTREAM_BRANCH" "$current_tracking" "$tmp_branch" 2>/dev/null; then
+                echo -e "  patch stack: ${GREEN}all $patch_count patch(es) apply cleanly on latest upstream${RESET}"
+                git checkout "$PATCHES_BRANCH" 2>/dev/null || true
+            else
+                echo -e "  patch stack: ${YELLOW}conflicts detected against latest upstream${RESET}"
+                git rebase --abort 2>/dev/null || true
+                git checkout "$PATCHES_BRANCH" 2>/dev/null || true
+                ((issues++))
+            fi
+            git branch -D "$tmp_branch" 2>/dev/null || true
+        fi
+    fi
+
+    # Check config file
+    if [[ -f "$CONFIG_FILE" ]]; then
+        echo -e "  config file: ${GREEN}present${RESET}"
+    else
+        echo -e "  config file: ${RED}missing${RESET}"
+        ((issues++))
+    fi
+
+    echo ""
+    if [[ "$issues" -eq 0 ]]; then
+        success "Everything looks good!"
+    else
+        warn "$issues issue(s) found."
+    fi
+}
+
+# ─── Command: auto-sync ──────────────────────────────────────────────────────
+
+cmd_autosync() {
+    load_config
+
+    local output_dir=".github/workflows"
+    local output_file="$output_dir/fork-pilot-sync.yml"
+
+    header "Generate GitHub Actions auto-sync workflow"
+    echo ""
+
+    # Ask for schedule
+    echo -e "  How often should auto-sync run?"
+    echo -e "  ${CYAN}1${RESET}) Daily (recommended)"
+    echo -e "  ${CYAN}2${RESET}) Every 6 hours"
+    echo -e "  ${CYAN}3${RESET}) Weekly"
+    echo -n "  Choose [1-3, default 1]: "
+    read -r choice
+
+    local cron_schedule
+    local schedule_desc
+    case "${choice:-1}" in
+        2) cron_schedule="0 */6 * * *"; schedule_desc="every 6 hours" ;;
+        3) cron_schedule="0 0 * * 1";   schedule_desc="weekly (Monday)" ;;
+        *) cron_schedule="0 0 * * *";   schedule_desc="daily" ;;
+    esac
+
+    mkdir -p "$output_dir"
+
+    cat > "$output_file" << 'WORKFLOW_EOF'
+# Generated by fork-pilot
+# Automatically syncs your fork with upstream and rebases patches.
+# On failure, creates a GitHub Issue to notify you.
+
+name: Fork Pilot Auto-Sync
+
+on:
+  schedule:
+    - cron: 'CRON_PLACEHOLDER'
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "fork-pilot[bot]"
+          git config user.email "fork-pilot[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream UPSTREAM_PLACEHOLDER || git remote set-url upstream UPSTREAM_PLACEHOLDER
+          git fetch upstream
+
+      - name: Sync tracking branch
+        run: |
+          git branch -f TRACKING_PLACEHOLDER upstream/BRANCH_PLACEHOLDER
+
+      - name: Rebase patches
+        id: rebase
+        run: |
+          SAVED_TRACKING=$(git log -1 --format=%H TRACKING_PLACEHOLDER~1 2>/dev/null || echo "")
+          git checkout PATCHES_PLACEHOLDER
+
+          if git rebase --onto TRACKING_PLACEHOLDER TRACKING_PLACEHOLDER~1 PATCHES_PLACEHOLDER 2>&1; then
+            echo "result=success" >> $GITHUB_OUTPUT
+          else
+            git rebase --abort || true
+            echo "result=conflict" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push if successful
+        if: steps.rebase.outputs.result == 'success'
+        run: |
+          git push origin PATCHES_PLACEHOLDER --force-with-lease
+          git push origin TRACKING_PLACEHOLDER --force-with-lease
+
+      - name: Create issue on conflict
+        if: steps.rebase.outputs.result == 'conflict'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `[fork-pilot] Sync conflict detected (${new Date().toISOString().split('T')[0]})`;
+            const body = `## Auto-sync failed\n\nUpstream has changes that conflict with your patches.\n\n**Action required:** Run \`fork-pilot sync\` locally to resolve conflicts.\n\n---\n*This issue was created automatically by fork-pilot.*`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['fork-pilot', 'sync-conflict']
+            });
+WORKFLOW_EOF
+
+    # Replace placeholders
+    sed -i "s|CRON_PLACEHOLDER|$cron_schedule|g" "$output_file"
+    sed -i "s|UPSTREAM_PLACEHOLDER|$UPSTREAM_URL|g" "$output_file"
+    sed -i "s|BRANCH_PLACEHOLDER|$UPSTREAM_BRANCH|g" "$output_file"
+    sed -i "s|TRACKING_PLACEHOLDER|$TRACKING_BRANCH|g" "$output_file"
+    sed -i "s|PATCHES_PLACEHOLDER|$PATCHES_BRANCH|g" "$output_file"
+
+    success "Workflow generated: ${BOLD}${output_file}${RESET}"
+    echo ""
+    echo -e "  Schedule: ${CYAN}${schedule_desc}${RESET} ($cron_schedule)"
+    echo -e "  On success: auto-pushes rebased patches"
+    echo -e "  On conflict: creates a GitHub Issue to notify you"
+    echo ""
+    echo -e "  ${BOLD}Next:${RESET} Commit and push this file to enable auto-sync."
+}
+
+# ─── Command: log ─────────────────────────────────────────────────────────────
+
+cmd_log() {
+    load_config
+
+    header "Sync history"
+    echo ""
+
+    # Show reflog entries for the tracking branch
+    git reflog "$TRACKING_BRANCH" --format="%C(cyan)%gd%C(reset) %C(dim)%cr%C(reset) %gs" -20 2>/dev/null || {
+        info "No sync history yet."
+    }
+}
+
+# ─── Command: undo ────────────────────────────────────────────────────────────
+
+cmd_undo() {
+    load_config
+    ensure_clean_tree
+
+    header "Undo last sync"
+    echo ""
+
+    # Find previous state of patches branch
+    local prev_head
+    prev_head=$(git reflog "$PATCHES_BRANCH" --format="%H" -2 2>/dev/null | tail -1)
+
+    if [[ -z "$prev_head" ]]; then
+        fatal "No previous state found to undo."
+    fi
+
+    local current_head
+    current_head=$(git rev-parse "$PATCHES_BRANCH")
+
+    if [[ "$prev_head" == "$current_head" ]]; then
+        info "Nothing to undo."
+        return 0
+    fi
+
+    local prev_subject
+    prev_subject=$(git log -1 --format="%s %cr" "$prev_head")
+    echo -e "  Current HEAD: ${DIM}$(git log -1 --format="%h %s" "$current_head")${RESET}"
+    echo -e "  Revert to:    ${BOLD}$(git log -1 --format="%h %s" "$prev_head")${RESET} ${DIM}($prev_subject)${RESET}"
+    echo ""
+    echo -n "  Proceed? [y/N] "
+    read -r answer
+    [[ "$answer" =~ ^[Yy] ]] || { info "Cancelled."; return 0; }
+
+    git branch -f "$PATCHES_BRANCH" "$prev_head"
+    [[ "$(current_branch)" == "$PATCHES_BRANCH" ]] && git reset --hard "$prev_head"
+
+    success "Undone. Patches branch restored to previous state."
+}
+
+# ─── Command: diff ────────────────────────────────────────────────────────────
+
+cmd_diff() {
+    load_config
+
+    local base
+    base=$(patches_base) || {
+        info "No patches — nothing to diff."
+        return 0
+    }
+
+    header "All changes from your patch stack:"
+    echo ""
+
+    git diff "$base..$PATCHES_BRANCH" --stat
+    echo ""
+    git diff "$base..$PATCHES_BRANCH"
+}
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+show_help() {
+    cat << 'EOF'
+
+  fork-pilot — Dead-simple fork maintenance for everyone.
+
+  Manages your customizations as a clean patch stack on top of upstream,
+  so syncing with upstream is always a one-command operation.
+
+EOF
+    echo -e "  ${BOLD}Usage:${RESET} fork-pilot <command> [options]"
+    echo ""
+    echo -e "  ${BOLD}Setup:${RESET}"
+    echo -e "    ${CYAN}init${RESET} <upstream-url> [branch]   Initialize fork tracking"
+    echo ""
+    echo -e "  ${BOLD}Patch Management:${RESET}"
+    echo -e "    ${CYAN}patch new${RESET} <name>               Create a new patch"
+    echo -e "    ${CYAN}patch list${RESET} [-v]                 List all patches"
+    echo -e "    ${CYAN}patch show${RESET} <name|index>         Show patch diff"
+    echo -e "    ${CYAN}patch edit${RESET} <name|index>         Amend an existing patch"
+    echo -e "    ${CYAN}patch drop${RESET} <name|index>         Remove a patch"
+    echo -e "    ${CYAN}patch export${RESET} [dir]              Export patches as .patch files"
+    echo -e "    ${CYAN}patch import${RESET} <file|dir>         Import .patch files"
+    echo -e "    ${CYAN}patch reorder${RESET}                   Reorder patch stack"
+    echo ""
+    echo -e "  ${BOLD}Sync with Upstream:${RESET}"
+    echo -e "    ${CYAN}sync${RESET} [--dry-run] [--force]      Rebase patches onto latest upstream"
+    echo -e "    ${CYAN}undo${RESET}                            Undo last sync"
+    echo ""
+    echo -e "  ${BOLD}Monitoring:${RESET}"
+    echo -e "    ${CYAN}status${RESET}                          Health check & conflict prediction"
+    echo -e "    ${CYAN}doctor${RESET}                          Diagnose setup issues"
+    echo -e "    ${CYAN}diff${RESET}                            Show all changes vs upstream"
+    echo -e "    ${CYAN}log${RESET}                             Show sync history"
+    echo ""
+    echo -e "  ${BOLD}Automation:${RESET}"
+    echo -e "    ${CYAN}auto-sync${RESET}                       Generate GitHub Actions workflow"
+    echo ""
+    echo -e "  ${BOLD}Quick Start:${RESET}"
+    echo ""
+    echo -e "    ${DIM}# 1. Fork a project on GitHub, clone your fork${RESET}"
+    echo -e "    git clone https://github.com/YOU/project.git"
+    echo -e "    cd project"
+    echo ""
+    echo -e "    ${DIM}# 2. Initialize fork-pilot${RESET}"
+    echo -e "    fork-pilot init https://github.com/ORIGINAL/project.git"
+    echo ""
+    echo -e "    ${DIM}# 3. Make changes and create patches${RESET}"
+    echo -e "    vim src/feature.py"
+    echo -e "    fork-pilot patch new my-custom-feature"
+    echo ""
+    echo -e "    ${DIM}# 4. Later, sync with upstream${RESET}"
+    echo -e "    fork-pilot sync"
+    echo ""
+    echo -e "  ${DIM}Version $VERSION${RESET}"
+}
+
+main() {
+    local cmd="${1:-}"
+    shift 2>/dev/null || true
+
+    case "$cmd" in
+        init)       cmd_init "$@" ;;
+        patch|p)    cmd_patch "$@" ;;
+        sync|s)     cmd_sync "$@" ;;
+        status|st)  cmd_status "$@" ;;
+        doctor)     cmd_doctor "$@" ;;
+        auto-sync)  cmd_autosync "$@" ;;
+        log)        cmd_log "$@" ;;
+        undo)       cmd_undo "$@" ;;
+        diff|d)     cmd_diff "$@" ;;
+        version|-v|--version) echo "fork-pilot $VERSION" ;;
+        help|-h|--help|"")    show_help ;;
+        *)          fatal "Unknown command: $cmd. Run 'fork-pilot --help' for usage." ;;
+    esac
+}
+
+main "$@"
