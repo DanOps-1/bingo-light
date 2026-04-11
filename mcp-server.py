@@ -486,6 +486,10 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
     """Map MCP tool calls to bingo-light CLI commands."""
     cwd = arguments.get("cwd", ".")
 
+    # Type validation — MCP clients can send any JSON type
+    if not isinstance(cwd, str):
+        return {"content": [{"type": "text", "text": f"Invalid cwd: expected string, got {type(cwd).__name__}"}], "isError": True}
+
     # Validate cwd is a real directory (prevent arbitrary filesystem access)
     if not os.path.isdir(cwd):
         return {"content": [{"type": "text", "text": f"Invalid cwd: directory does not exist: {cwd}"}], "isError": True}

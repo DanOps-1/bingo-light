@@ -2026,6 +2026,7 @@ patch_squash() {
     total=$(count_patches)
     [[ "$idx1" -ge 1 && "$idx1" -le "$total" ]] || fatal "Index out of range: $idx1 (1-$total)"
     [[ "$idx2" -ge 1 && "$idx2" -le "$total" ]] || fatal "Index out of range: $idx2 (1-$total)"
+    [[ "$idx1" -ne "$idx2" ]] || fatal "Cannot squash a patch with itself."
 
     local base
     base=$(patches_base) || { fatal "No patches."; }
