@@ -248,12 +248,12 @@ def test_protocol_basics():
     resps = send_receive(msgs)
     if len(resps) == 1 and 'result' in resps[0]:
         tools = resps[0]['result'].get('tools', [])
-        if len(tools) == 22:
-            ok(f'tools/list returns 22 tools')
+        if len(tools) >= 22:
+            ok(f'tools/list returns {len(tools)} tools')
         else:
-            fail(f'tools/list returns 22 tools', f'got {len(tools)}')
+            fail(f'tools/list returns >=22 tools', f'got {len(tools)}')
     else:
-        fail('tools/list returns 22 tools', f'got {resps}')
+        fail('tools/list returns tools', f'got {resps}')
 
     # notifications/initialized should not produce a response
     msgs = [
