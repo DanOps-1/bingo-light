@@ -1214,8 +1214,21 @@ cmd_smart_sync() {
     load_config
     ensure_clean_tree
 
+    # Circuit breaker: if last 3 syncs failed on the same upstream commit, stop trying
+    local upstream_target
+    upstream_target=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+    if [[ -f .bingo/.sync-failures ]]; then
+        local fail_count fail_target
+        fail_target=$(head -1 .bingo/.sync-failures)
+        fail_count=$(tail -1 .bingo/.sync-failures)
+        if [[ "$fail_target" == "$upstream_target" && "${fail_count:-0}" -ge 3 ]]; then
+            fatal "Circuit breaker: 3 consecutive sync failures on the same upstream commit. Resolve conflicts manually or wait for upstream to advance."
+        fi
+    fi
+
     # Step 1: Fetch and check
     git fetch upstream 2>/dev/null || fatal "Failed to fetch upstream."
+    upstream_target=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
     local tracking_head upstream_head
     tracking_head=$(git rev-parse "$TRACKING_BRANCH" 2>/dev/null)
     upstream_head=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null)
@@ -1253,6 +1266,7 @@ cmd_smart_sync() {
     local rebase_output conflicts_resolved=0 max_resolve=20 resolve_iter=0
     if rebase_output=$(git rebase --onto "$TRACKING_BRANCH" "$saved_tracking" "$PATCHES_BRANCH" 2>&1); then
         # Clean rebase — done!
+        rm -f .bingo/.sync-failures  # Reset circuit breaker on success
         [[ "$JSON_MODE" != true ]] && echo "$rebase_output"
         record_sync_history "$(pwd)" "$behind" "$(git rev-parse --short "$saved_tracking" 2>/dev/null)" 2>/dev/null || true
         if [[ "$JSON_MODE" == true ]]; then
@@ -1296,6 +1310,17 @@ cmd_smart_sync() {
         # Real unresolved conflicts — report what we have and stop
         git branch -f "$TRACKING_BRANCH" "$saved_tracking" &>/dev/null || true
 
+        # Circuit breaker: increment failure count
+        local prev_count=0
+        if [[ -f .bingo/.sync-failures ]]; then
+            local prev_target
+            prev_target=$(head -1 .bingo/.sync-failures)
+            if [[ "$prev_target" == "$upstream_target" ]]; then
+                prev_count=$(tail -1 .bingo/.sync-failures)
+            fi
+        fi
+        printf '%s\n%d' "$upstream_target" "$((prev_count + 1))" > .bingo/.sync-failures
+
         if [[ "$JSON_MODE" == true ]]; then
             # Build conflict details
             local cf_json="["
@@ -1312,7 +1337,11 @@ cmd_smart_sync() {
             done <<< "$unresolved"
             cf_json+="]"
 
-            json_out '{"ok":false,"action":"needs_human","behind_before":'"$behind"',"conflicts_auto_resolved":'"$conflicts_resolved"',"remaining_conflicts":'"$cf_json"',"resolution_steps":["1. Read ours/theirs for each conflict","2. Write merged content to the file","3. git add <file>","4. git rebase --continue","5. Run bingo-light status to verify"],"abort_cmd":"git rebase --abort","next":"Run bingo-light conflict-analyze --json to see conflict details, then resolve each file"}'
+            local current_patch_info=""
+            if [[ -f .git/rebase-merge/message ]]; then
+                current_patch_info=$(head -1 .git/rebase-merge/message | json_escape)
+            fi
+            json_out '{"ok":false,"action":"needs_human","behind_before":'"$behind"',"conflicts_auto_resolved":'"$conflicts_resolved"',"current_patch":"'"$current_patch_info"'","remaining_conflicts":'"$cf_json"',"resolution_steps":["1. Read ours/theirs for each conflict","2. Write merged content to the file","3. git add <file>","4. git rebase --continue","5. Run bingo-light smart-sync again to continue"],"abort_cmd":"git rebase --abort","next":"For each conflict: read merge_hint, write merged file, git add, git rebase --continue"}'
         else
             warn "Smart sync: $conflicts_resolved conflict(s) auto-resolved, but manual resolution needed."
             echo ""
@@ -1326,6 +1355,7 @@ cmd_smart_sync() {
     done
 
     # If we get here, all conflicts were auto-resolved by rerere
+    rm -f .bingo/.sync-failures  # Reset circuit breaker on success
     record_sync_history "$(pwd)" "$behind" "$(git rev-parse --short "$saved_tracking" 2>/dev/null)" 2>/dev/null || true
     if [[ "$JSON_MODE" == true ]]; then
         json_out '{"ok":true,"action":"synced_with_rerere","behind_before":'"$behind"',"patches_rebased":'"$patch_count"',"conflicts_auto_resolved":'"$conflicts_resolved"'}'
