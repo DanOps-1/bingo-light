@@ -196,7 +196,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 **Any MCP client** (VS Code Copilot, Cursor, custom agents): connect via stdio to `python3 mcp-server.py`.
 
-### 22 MCP Tools
+### 27 MCP Tools
 
 | Tool | Purpose |
 |------|---------|
@@ -222,6 +222,11 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 | `bingo_history` | Sync history with hash mappings |
 | `bingo_test` | Run configured test suite |
 | `bingo_workspace_status` | Multi-repo workspace overview |
+| `bingo_patch_edit` | Amend an existing patch |
+| `bingo_workspace_init` | Initialize multi-repo workspace |
+| `bingo_workspace_add` | Add a repo to workspace |
+| `bingo_workspace_sync` | Sync all workspace repos |
+| `bingo_workspace_list` | List workspace repos |
 
 ### JSON examples
 
@@ -429,6 +434,13 @@ llms.txt             Complete LLM-consumable reference
 ```
 
 ---
+
+## Documentation
+
+- [Getting Started](docs/getting-started.md) -- 5-minute quickstart guide
+- [Concepts](docs/concepts.md) -- branch model, patch stack, sync flow
+- [Changelog](CHANGELOG.md) -- version history
+- [Security](SECURITY.md) -- security model and vulnerability reporting
 
 ## Contributing
 

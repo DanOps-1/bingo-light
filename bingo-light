@@ -472,22 +472,30 @@ patch_list() {
     local total
     total=$(echo "$commits" | wc -l | tr -d ' ')
 
-    # JSON mode
+    # JSON mode — single-pass git log + awk (avoids N subprocess forks per patch)
     if [[ "$JSON_MODE" == true ]]; then
-        local json_patches="["
-        local first=true
-        while IFS= read -r hash; do
-            local short_hash subject pname files_count stat
-            short_hash=$(git rev-parse --short "$hash")
-            subject=$(git log -1 --format="%s" "$hash")
-            pname=""
-            [[ "$subject" =~ ^\[bl\]\ ([^:]+): ]] && pname="${BASH_REMATCH[1]}"
-            files_count=$(git diff-tree --no-commit-id -r "$hash" | wc -l | tr -d ' ')
-            stat=$(git diff-tree --no-commit-id --shortstat "$hash" 2>/dev/null | sed 's/^ //' | json_escape)
-            [[ "$first" == true ]] && first=false || json_patches+=","
-            json_patches+='{"name":"'"$(echo "$pname" | json_escape)"'","hash":"'"$short_hash"'","subject":"'"$(echo "$subject" | json_escape)"'","files":'"$files_count"',"stat":"'"$stat"'"}'
-        done <<< "$commits"
-        json_patches+="]"
+        local json_patches
+        json_patches=$(git log --format="PATCH%x09%h%x09%s" --shortstat --numstat --reverse "$base..$PATCHES_BRANCH" 2>/dev/null | awk '
+BEGIN { ORS="" }
+/^PATCH\t/ {
+    if (n>0) { emit() }
+    n++; files=0; stat=""
+    split($0, a, "\t"); hash=a[2]; subj=a[3]
+    name=""
+    if (match(subj, /^\[bl\] ([^:]+):/, m)) name=m[1]
+    gsub(/\\/, "\\\\", subj); gsub(/"/, "\\\"", subj); gsub(/\t/, "\\t", subj)
+    gsub(/\\/, "\\\\", name); gsub(/"/, "\\\"", name)
+    next
+}
+/^[0-9]+\t[0-9]+\t/ { files++; next }
+/^ *[0-9]+ file/ { gsub(/^ /, "", $0); stat=$0; gsub(/"/, "\\\"", stat); next }
+/^$/ { next }
+function emit() {
+    if (n==1) printf "["; else printf ","
+    printf "{\"name\":\"%s\",\"hash\":\"%s\",\"subject\":\"%s\",\"files\":%d,\"stat\":\"%s\"}", name, hash, subj, files, stat
+}
+END { if (n>0) emit(); else printf "["; printf "]" }
+')
         json_out '{"ok":true,"patches":'"$json_patches"',"count":'"$total"'}'
         return 0
     fi
@@ -1744,20 +1752,22 @@ cmd_json_status() {
         patch_count=$(git rev-list --count "$base..$PATCHES_BRANCH" 2>/dev/null || echo 0)
     fi
 
-    # Collect patch data as tab-separated lines for Python
+    # Collect patch data via single-pass git log (avoids N subprocesses)
     local patch_data=""
     if [[ "$patch_count" -gt 0 ]]; then
-        local commits
-        commits=$(git rev-list --reverse "$base..$PATCHES_BRANCH" 2>/dev/null)
-        while IFS= read -r hash; do
-            [[ -z "$hash" ]] && continue
-            local short_hash subject files_count pname=""
-            short_hash=$(git rev-parse --short "$hash")
-            subject=$(git log -1 --format="%s" "$hash")
-            files_count=$(git diff-tree --no-commit-id -r "$hash" | wc -l | tr -d ' ')
-            [[ "$subject" =~ ^\[bl\]\ ([^:]+): ]] && pname="${BASH_REMATCH[1]}"
-            patch_data+="${pname}"$'\t'"${short_hash}"$'\t'"${subject}"$'\t'"${files_count}"$'\n'
-        done <<< "$commits"
+        patch_data=$(git log --format="PATCH%x09%h%x09%s" --numstat --reverse "$base..$PATCHES_BRANCH" 2>/dev/null | awk '
+/^PATCH\t/ {
+    if (n>0) printf "%s\t%s\t%s\t%d\n", name, hash, subj, files
+    n++; files=0
+    split($0, a, "\t"); hash=a[2]; subj=a[3]
+    name=""
+    if (match(subj, /^\[bl\] ([^:]+):/, m)) name=m[1]
+    next
+}
+/^[0-9]+\t[0-9]+\t/ { files++; next }
+/^$/ { next }
+END { if (n>0) printf "%s\t%s\t%s\t%d\n", name, hash, subj, files }
+')
     fi
 
     # Overlap detection

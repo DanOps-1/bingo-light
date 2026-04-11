@@ -16,6 +16,7 @@
   <a href="https://github.com/DanOps-1/bingo-light/releases"><img src="https://img.shields.io/github/v/release/DanOps-1/bingo-light?label=Release&color=orange" alt="Release"></a>
   <a href="#mcp-服务器"><img src="https://img.shields.io/badge/MCP-27_tools-blueviolet.svg" alt="MCP: 27 tools"></a>
   <a href="https://www.gnu.org/software/bash/"><img src="https://img.shields.io/badge/Made_with-Bash-1f425f.svg" alt="Bash"></a>
+  <img src="https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg" alt="Zero deps">
   <a href="https://github.com/DanOps-1/bingo-light/stargazers"><img src="https://img.shields.io/github/stars/DanOps-1/bingo-light?style=social" alt="Stars"></a>
   <br><br>
 </p>
@@ -157,7 +158,7 @@ curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/bingo-lig
 
 | 功能 | 说明 |
 |------|------|
-| **MCP 服务器** | 22 个工具，覆盖从初始化到冲突解决的全流程 |
+| **MCP 服务器** | 27 个工具，覆盖从初始化到冲突解决的全流程 |
 | **`--json` 标志** | 所有命令返回结构化 JSON |
 | **`--yes` 标志** | 完全非交互，不需要 TTY |
 | **自动检测非 TTY** | 管道或子进程调用时自动抑制交互提示 |
@@ -216,7 +217,7 @@ curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/bingo-lig
 
 ## MCP 服务器
 
-`mcp-server.py` 是零依赖的 Python 3 MCP 服务器，通过 stdio 暴露 22 个工具（JSON-RPC 2.0）。
+`mcp-server.py` 是零依赖的 Python 3 MCP 服务器，通过 stdio 暴露 27 个工具（JSON-RPC 2.0）。
 
 ### 配置
 
@@ -274,6 +275,11 @@ curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/bingo-lig
 | `bingo_history` | 同步历史 + hash 映射 |
 | `bingo_test` | 运行测试套件 |
 | `bingo_workspace_status` | 多仓库工作区概览 |
+| `bingo_patch_edit` | 修改已有补丁 |
+| `bingo_workspace_init` | 初始化多仓库工作区 |
+| `bingo_workspace_add` | 添加仓库到工作区 |
+| `bingo_workspace_sync` | 同步工作区所有仓库 |
+| `bingo_workspace_list` | 列出工作区仓库 |
 
 ## 命令参考
 
@@ -431,7 +437,7 @@ bingo-light 在 `init` 时自动启用 git 的 `rerere`（reuse recorded resolut
 | 一键上游同步 | **有** | 无（多步操作） | 无（纯手动） | 部分 |
 | 冲突记忆 (rerere) | **自动** | 需手动启用 | 无 | 无 |
 | 冲突预测 | **有** | 无 | 无 | 无 |
-| AI/MCP 集成 | **22 个工具** | 无 | 无 | 无 |
+| AI/MCP 集成 | **27 个工具** | 无 | 无 | 无 |
 | 结构化 JSON 输出 | **所有命令** | 无 | 无 | 部分 |
 | 非交互模式 | **原生支持** | 部分 | 部分 | 有 |
 | 依赖 | bash + git | git | quilt | 语言特定 |
@@ -442,7 +448,7 @@ bingo-light 在 `init` 时自动启用 git 的 `rerere`（reuse recorded resolut
 
 ```
 bingo-light          CLI 核心（单文件 bash 脚本）
-mcp-server.py        MCP 服务器（零依赖 Python 3，22 个工具）
+mcp-server.py        MCP 服务器（零依赖 Python 3，27 个工具）
 agent.py             Advisor 代理（监控 + 分析 + 安全时自动同步）
 tui.py               终端面板（curses TUI）
 install.sh           交互式安装器（动画 TUI）

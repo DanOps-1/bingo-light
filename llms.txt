@@ -160,7 +160,7 @@ Show sync history with detailed hash mappings. Each entry records the timestamp,
 
 ### bingo-light test
 
-Run the configured test suite. The test command is set via `config set test-command "<cmd>"`. Used by `sync --test` to validate patches after sync.
+Run the configured test suite. The test command is set via `config set test.command "<cmd>"`. Used by `sync --test` to validate patches after sync.
 
 ### bingo-light workspace init|add|list|status|sync
 

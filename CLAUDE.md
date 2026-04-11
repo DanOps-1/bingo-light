@@ -48,7 +48,7 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-## MCP Tools (22)
+## MCP Tools (27)
 
 | Tool | Purpose |
 |------|---------|
@@ -74,6 +74,11 @@ Add to `~/.claude/settings.json`:
 | `bingo_history` | Sync history with hash mappings |
 | `bingo_test` | Run configured test suite |
 | `bingo_workspace_status` | Multi-repo workspace overview |
+| `bingo_patch_edit` | Amend an existing patch |
+| `bingo_workspace_init` | Initialize multi-repo workspace |
+| `bingo_workspace_add` | Add a repo to workspace |
+| `bingo_workspace_sync` | Sync all workspace repos |
+| `bingo_workspace_list` | List workspace repos |
 
 All tools require `cwd` parameter.
 
