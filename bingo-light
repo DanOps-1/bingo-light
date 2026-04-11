@@ -142,6 +142,27 @@ patches_base() {
     git merge-base "$TRACKING_BRANCH" "$PATCHES_BRANCH" 2>/dev/null
 }
 
+# Auto-fix tracking branch after manual conflict resolution
+# If a sync was rolled back on conflict and user completed rebase manually,
+# tracking branch may be stale. Detect and fix.
+_fix_stale_tracking() {
+    [[ -d .git/rebase-merge || -d .git/rebase-apply ]] && return  # don't touch during active rebase
+    local tracking_pos patches_base_pos upstream_pos
+    tracking_pos=$(git rev-parse "$TRACKING_BRANCH" 2>/dev/null) || return
+    upstream_pos=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null) || return
+    patches_base_pos=$(git merge-base "$TRACKING_BRANCH" "$PATCHES_BRANCH" 2>/dev/null) || return
+    # If tracking is behind upstream AND patches are already rebased past tracking
+    # (i.e., patches_base is at or ahead of upstream), then tracking needs to catch up
+    if [[ "$tracking_pos" != "$upstream_pos" ]] && git merge-base --is-ancestor "$tracking_pos" "$patches_base_pos" 2>/dev/null; then
+        # Patches are based on a commit that is descendant of tracking — tracking is stale
+        # Check if patches_base is actually on the upstream line
+        if git merge-base --is-ancestor "$tracking_pos" "$patches_base_pos" 2>/dev/null && \
+           git merge-base --is-ancestor "$patches_base_pos" "$upstream_pos" 2>/dev/null; then
+            git branch -f "$TRACKING_BRANCH" "$upstream_pos" &>/dev/null
+        fi
+    fi
+}
+
 # ─── Command: init ────────────────────────────────────────────────────────────
 
 cmd_init() {
@@ -1184,11 +1205,13 @@ cmd_status() {
     # In JSON mode, delegate to structured output
     if [[ "$JSON_MODE" == true ]]; then
         load_config
+        _fix_stale_tracking
         cmd_json_status
         return
     fi
 
     load_config
+    _fix_stale_tracking
 
     header "bingo-light status"
     echo ""
