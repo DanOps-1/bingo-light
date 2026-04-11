@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![AI-native](https://img.shields.io/badge/AI--native-MCP%20%2B%20JSON-blueviolet.svg)](#why-ai-native)
 [![Bash](https://img.shields.io/badge/Made_with-Bash-1f425f.svg)](https://www.gnu.org/software/bash/)
-[![Tests](https://img.shields.io/badge/Tests-Passing-brightgreen.svg)](.github/workflows)
+[![CI](https://github.com/DanOps-1/bingo-light/actions/workflows/ci.yml/badge.svg)](https://github.com/DanOps-1/bingo-light/actions)
 [![Version](https://img.shields.io/badge/Version-1.0.0-orange.svg)](bingo-light)
 
 **AI-native fork maintenance. One tool for agents to manage upstream sync.**
@@ -344,13 +344,13 @@ assert status["behind"] == 0
 **One-liner:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/user/bingo-light/main/bingo-light -o /usr/local/bin/bingo-light && chmod +x /usr/local/bin/bingo-light
+curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/bingo-light -o /usr/local/bin/bingo-light && chmod +x /usr/local/bin/bingo-light
 ```
 
 **From source:**
 
 ```bash
-git clone https://github.com/user/bingo-light.git
+git clone https://github.com/DanOps-1/bingo-light.git
 cd bingo-light
 ./install.sh            # installs to /usr/local/bin (uses sudo if needed)
 ```
@@ -424,7 +424,7 @@ bingo_conflict_resolve(cwd, file, content) --> 写入修复，暂存，继续 re
 
 ```bash
 # 安装
-curl -fsSL https://raw.githubusercontent.com/user/bingo-light/main/bingo-light -o /usr/local/bin/bingo-light && chmod +x /usr/local/bin/bingo-light
+curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/bingo-light -o /usr/local/bin/bingo-light && chmod +x /usr/local/bin/bingo-light
 
 # 初始化
 cd my-forked-project

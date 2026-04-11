@@ -500,9 +500,11 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
         return run_pingo(["conflict-analyze", "--json"], cwd)
 
     elif name == "bingo_conflict_resolve":
-        file_path = os.path.realpath(os.path.join(cwd, arguments["file"]))
-        real_cwd = os.path.realpath(cwd)
-        if not file_path.startswith(real_cwd + os.sep) and file_path != real_cwd:
+        from pathlib import Path as _P
+        try:
+            file_path = str(_P(cwd, arguments["file"]).resolve())
+            _P(file_path).relative_to(_P(cwd).resolve())
+        except (ValueError, RuntimeError):
             return {"content": [{"type": "text", "text": f"Security: path escapes repository: {arguments['file']}"}], "isError": True}
         if not os.path.exists(os.path.join(cwd, ".git", "rebase-merge")) and not os.path.exists(os.path.join(cwd, ".git", "rebase-apply")):
             return {"content": [{"type": "text", "text": "Not in a rebase. Nothing to resolve."}], "isError": True}

@@ -54,11 +54,12 @@ dim()     { [[ "$JSON_MODE" == true ]] && return; echo -e "${DIM}$*${RESET}"; }
 # ─── JSON Helpers ─────────────────────────────────────────────────────────────
 
 json_escape() {
-    # Read all input, escape for JSON string value
-    sed -e 's/\[bl\]/\[bl\]\[bl\]/g' -e 's/"/\[bl\]"/g' -e 's/\t/\[bl\]t/g' -e 's/\r/\[bl\]r/g' \
-        -e ':a' -e 'N' -e '$!ba' -e 's/\n/\[bl\]n/g'
+    # Read ALL input first, then escape for JSON string value
+    # Order: collect lines → backslash → quote → tab → CR → newline
+    sed -e ':a' -e 'N' -e '$!ba' \
+        -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' -e 's/\r/\\r/g' -e 's/\n/\\n/g'
 }
-json_out()    { echo "$1"; }
+json_out()    { printf '%s\n' "$1"; }
 
 # Prompt helper: auto-answers "y" in non-interactive/YES mode
 confirm() {
@@ -964,7 +965,13 @@ cmd_sync() {
             info "rerere auto-resolved conflicts, continuing rebase..."
             # Loop: continue rebase until done or a real conflict appears
             local rerere_ok=true
+            local rerere_iter=0
             while [[ -d .git/rebase-merge || -d .git/rebase-apply ]]; do
+                rerere_iter=$((rerere_iter + 1))
+                if [[ $rerere_iter -gt 50 ]]; then
+                    git rebase --abort &>/dev/null || true
+                    fatal "rerere auto-continue exceeded 50 iterations, aborting."
+                fi
                 if GIT_EDITOR=true git rebase --continue 2>&1; then
                     break  # rebase done
                 fi
@@ -1557,70 +1564,84 @@ cmd_json_status() {
 
     git fetch upstream 2>/dev/null || true
 
-    local tracking_head upstream_head behind=0 patch_count=0
+    # Gather all data, then use Python for safe JSON construction
+    local tracking_head upstream_head
     tracking_head=$(git rev-parse "$TRACKING_BRANCH" 2>/dev/null || echo "")
     upstream_head=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
 
+    local behind=0
     if [[ -n "$tracking_head" && -n "$upstream_head" && "$tracking_head" != "$upstream_head" ]]; then
         behind=$(git rev-list --count "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo 0)
     fi
 
-    local base=""
+    local base="" patch_count=0
     if base=$(patches_base 2>/dev/null); then
         patch_count=$(git rev-list --count "$base..$PATCHES_BRANCH" 2>/dev/null || echo 0)
     fi
 
-    # Build patches array
-    local patches_json="["
+    # Collect patch data as tab-separated lines for Python
+    local patch_data=""
     if [[ "$patch_count" -gt 0 ]]; then
-        local first=true
         local commits
         commits=$(git rev-list --reverse "$base..$PATCHES_BRANCH" 2>/dev/null)
         while IFS= read -r hash; do
             [[ -z "$hash" ]] && continue
-            [[ "$first" == true ]] && first=false || patches_json+=","
-            local subject short_hash files_count
+            local short_hash subject files_count pname=""
             short_hash=$(git rev-parse --short "$hash")
-            subject=$(git log -1 --format="%s" "$hash" | json_escape)
+            subject=$(git log -1 --format="%s" "$hash")
             files_count=$(git diff-tree --no-commit-id -r "$hash" | wc -l)
-
-            local pname=""
-            local raw_subject
-            raw_subject=$(git log -1 --format="%s" "$hash")
-            if [[ "$raw_subject" =~ ^\[bl\]\ ([^:]+): ]]; then
-                pname="${BASH_REMATCH[1]}"
-            fi
-
-            patches_json+='{"name":"'"$pname"'","hash":"'"$short_hash"'","subject":"'"$subject"'","files":'"$files_count"'}'
+            [[ "$subject" =~ ^\[bl\]\ ([^:]+): ]] && pname="${BASH_REMATCH[1]}"
+            patch_data+="${pname}"$'\t'"${short_hash}"$'\t'"${subject}"$'\t'"${files_count}"$'\n'
         done <<< "$commits"
     fi
-    patches_json+="]"
 
     # Overlap detection
-    local overlap_json="[]"
+    local overlap=""
     if [[ "$behind" -gt 0 && "$patch_count" -gt 0 && -n "$base" ]]; then
-        local patch_files upstream_files overlap
+        local patch_files upstream_files
         patch_files=$(git diff --name-only "$base..$PATCHES_BRANCH" 2>/dev/null | sort)
         upstream_files=$(git diff --name-only "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH" 2>/dev/null | sort)
         if [[ -n "$patch_files" && -n "$upstream_files" ]]; then
             overlap=$(comm -12 <(echo "$patch_files") <(echo "$upstream_files"))
-            if [[ -n "$overlap" ]]; then
-                overlap_json='['
-                local first=true
-                while IFS= read -r f; do
-                    [[ -z "$f" ]] && continue
-                    [[ "$first" == true ]] && first=false || overlap_json+=','
-                    overlap_json+='"'"$f"'"'
-                done <<< "$overlap"
-                overlap_json+=']'
-            fi
         fi
     fi
 
     local in_rebase=false
     [[ -d .git/rebase-merge || -d .git/rebase-apply ]] && in_rebase=true
 
-    json_out '{"ok":true,"upstream_url":"'"$(echo "$UPSTREAM_URL" | json_escape)"'","upstream_branch":"'"$UPSTREAM_BRANCH"'","current_branch":"'"$(current_branch)"'","behind":'"$behind"',"patch_count":'"$patch_count"',"patches":'"$patches_json"',"conflict_risk":'"$overlap_json"',"in_rebase":'"$in_rebase"',"up_to_date":'"$([ "$behind" -eq 0 ] && echo true || echo false)"'}'
+    # Build JSON safely with Python (handles all escaping correctly)
+    printf '%s\n---PATCHES---\n%s---OVERLAP---\n%s' \
+        "$UPSTREAM_URL"$'\t'"$UPSTREAM_BRANCH"$'\t'"$(current_branch)"$'\t'"$behind"$'\t'"$patch_count"$'\t'"$in_rebase" \
+        "$patch_data" \
+        "$overlap" | python3 -c "
+import json, sys
+data = sys.stdin.read()
+parts = data.split('---PATCHES---\n')
+header = parts[0].strip().split('\t')
+rest = parts[1].split('---OVERLAP---\n')
+patch_lines = rest[0].strip()
+overlap_text = rest[1].strip() if len(rest) > 1 else ''
+
+url, branch, cur_branch, behind, pcount, in_rebase = header
+behind, pcount = int(behind), int(pcount)
+
+patches = []
+for line in patch_lines.split('\n'):
+    if not line.strip(): continue
+    fields = line.split('\t')
+    if len(fields) >= 4:
+        patches.append({'name': fields[0], 'hash': fields[1], 'subject': fields[2], 'files': int(fields[3])})
+
+overlap = [f for f in overlap_text.split('\n') if f.strip()]
+
+result = {
+    'ok': True, 'upstream_url': url, 'upstream_branch': branch,
+    'current_branch': cur_branch, 'behind': behind, 'patch_count': pcount,
+    'patches': patches, 'conflict_risk': overlap,
+    'in_rebase': in_rebase == 'true', 'up_to_date': behind == 0
+}
+print(json.dumps(result))
+" 2>/dev/null || json_out '{"ok":false,"error":"json build failed"}'
 }
 
 # ─── Command: config ───────────────────────────────────────────────────────────
@@ -1721,10 +1742,13 @@ cmd_patch_meta() {
     if [[ -z "$action" ]]; then
         # Show metadata for this patch
         local meta
-        meta=$(python3 -c "
+        meta=$(echo "$target" | python3 -c "
 import json, sys
-with open('$METADATA_FILE') as f: data = json.load(f)
-p = data.get('patches', {}).get('$target', {})
+target = sys.stdin.read().strip()
+try:
+    with open('$METADATA_FILE') as f: data = json.load(f)
+except: data = {'patches': {}}
+p = data.get('patches', {}).get(target, {})
 if not p: p = {'reason':'','tags':[],'expires':None,'upstream_pr':'','status':'permanent'}
 json.dump(p, sys.stdout)
 " 2>/dev/null || echo '{}')
@@ -1741,25 +1765,26 @@ for k, v in d.items():
 " 2>/dev/null
         fi
     else
-        # Set metadata
-        python3 -c "
-import json
-with open('$METADATA_FILE') as f: data = json.load(f)
+        # Set metadata (data passed via stdin, not shell interpolation)
+        printf '%s\n%s\n%s\n%s' "$target" "$action" "$value" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | python3 -c "
+import json, sys, os
+lines = sys.stdin.read().strip().split('\n')
+target, action, value, ts = lines[0], lines[1], lines[2], lines[3]
+path = '$METADATA_FILE'
+data = {'patches': {}}
+if os.path.exists(path):
+    with open(path) as f: data = json.load(f)
 patches = data.setdefault('patches', {})
-p = patches.setdefault('$target', {'reason':'','tags':[],'expires':None,'upstream_pr':'','status':'permanent','created':'$(date -u +%Y-%m-%dT%H:%M:%SZ)'})
-action, value = '$action', '$value'
+p = patches.setdefault(target, {'reason':'','tags':[],'expires':None,'upstream_pr':'','status':'permanent','created':ts})
 if action == 'tag':
-    if value not in p.get('tags', []):
-        p.setdefault('tags', []).append(value)
-elif action == 'reason':
-    p['reason'] = value
-elif action == 'expires':
-    p['expires'] = value
-elif action == 'upstream_pr':
-    p['upstream_pr'] = value
-elif action == 'status':
-    p['status'] = value
-with open('$METADATA_FILE', 'w') as f: json.dump(data, f, indent=2)
+    if value not in p.get('tags', []): p.setdefault('tags', []).append(value)
+elif action in ('reason','expires','upstream_pr','status'):
+    p[action] = value
+import tempfile
+tmp = tempfile.NamedTemporaryFile(mode='w', dir=os.path.dirname(path) or '.', delete=False, suffix='.tmp')
+json.dump(data, tmp, indent=2)
+tmp.close()
+os.replace(tmp.name, path)
 " 2>/dev/null
 
         if [[ "$JSON_MODE" == true ]]; then
@@ -1958,7 +1983,7 @@ cmd_test() {
     fi
 
     info "Running: $test_cmd"
-    if eval "$test_cmd"; then
+    if bash -c "$test_cmd"; then
         if [[ "$JSON_MODE" == true ]]; then
             json_out '{"ok":true,"test":"pass","command":"'"$(echo "$test_cmd" | json_escape)"'"}'
         else

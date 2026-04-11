@@ -1,1 +1,6 @@
 __pycache__/
+*.pyc
+.bingo-agent-state.json
+.bingo-report.md
+.bl-patches/
+*.bak
