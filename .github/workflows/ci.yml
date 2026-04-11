@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    name: Tests
+    name: Core Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,8 +21,39 @@ jobs:
           git config --global user.name "CI"
           git config --global user.email "ci@test"
 
-      - name: Run test suite
+      - name: Run core test suite
         run: ./tests/test.sh
+
+  fuzz:
+    name: JSON Fuzz + Edge Cases
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@test"
+
+      - name: JSON fuzz tests
+        run: ./tests/test-json.sh
+
+      - name: Git edge case tests
+        run: ./tests/test-edge.sh
+
+  mcp:
+    name: MCP Protocol Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@test"
+
+      - name: MCP protocol tests
+        run: python3 ./tests/test-mcp.py
 
   lint:
     name: ShellCheck
@@ -30,14 +61,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ShellCheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-
       - name: Lint bingo-light
         run: shellcheck --severity=error bingo-light
 
-      - name: Lint install.sh
-        run: shellcheck install.sh || true
+      - name: Lint test scripts
+        run: shellcheck --severity=error tests/test.sh tests/test-json.sh tests/test-edge.sh
 
       - name: Lint contrib hooks
         run: shellcheck --severity=error contrib/hooks/*
