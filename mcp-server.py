@@ -35,8 +35,9 @@ TOOLS = [
     {
         "name": "bingo_status",
         "description": (
-            "Check the health of your fork: how far behind upstream, list all patches, "
-            "predict potential conflicts. Run this FIRST to understand the current state."
+            "Check the health of your fork. Returns recommended_action telling you exactly "
+            "what to do next: 'up_to_date', 'sync_safe', 'sync_risky', or 'resolve_conflict'. "
+            "ALWAYS call this FIRST. Read the recommended_action field — don't guess."
         ),
         "inputSchema": {
             "type": "object",
@@ -192,8 +193,9 @@ TOOLS = [
     {
         "name": "bingo_sync",
         "description": (
-            "Sync with upstream: fetch latest changes and rebase all patches. "
-            "Use dry_run=true to preview without making changes."
+            "Low-level sync: fetch upstream and rebase patches. Prefer bingo_smart_sync instead — "
+            "it handles conflicts automatically. Only use bingo_sync when you need dry_run preview "
+            "or fine-grained control over the rebase process."
         ),
         "inputSchema": {
             "type": "object",

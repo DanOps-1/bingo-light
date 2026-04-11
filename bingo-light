@@ -1179,7 +1179,7 @@ cmd_sync() {
                 cf_json+='"'"$(echo "$cf" | json_escape)"'"'
             done <<< "$conflicted_files_raw"
             cf_json+="]"
-            json_out '{"ok":false,"synced":false,"conflict":true,"conflicted_files":'"$cf_json"',"abort_cmd":"git rebase --abort","tracking_restore":"git branch -f '"$TRACKING_BRANCH"' '"$saved_tracking"'"}'
+            json_out '{"ok":false,"synced":false,"conflict":true,"conflicted_files":'"$cf_json"',"abort_cmd":"git rebase --abort","next":"Run bingo-light conflict-analyze --json to see conflict details, then resolve each file","tracking_restore":"git branch -f '"$TRACKING_BRANCH"' '"$saved_tracking"'"}'
         else
             echo ""
             warn "Rebase conflict detected!"
@@ -1305,7 +1305,7 @@ cmd_smart_sync() {
             done <<< "$unresolved"
             cf_json+="]"
 
-            json_out '{"ok":false,"action":"needs_human","behind_before":'"$behind"',"conflicts_auto_resolved":'"$conflicts_resolved"',"remaining_conflicts":'"$cf_json"',"resolution_steps":["1. Read ours/theirs for each conflict","2. Write merged content to the file","3. git add <file>","4. git rebase --continue","5. Run bingo-light status to verify"],"abort_cmd":"git rebase --abort"}'
+            json_out '{"ok":false,"action":"needs_human","behind_before":'"$behind"',"conflicts_auto_resolved":'"$conflicts_resolved"',"remaining_conflicts":'"$cf_json"',"resolution_steps":["1. Read ours/theirs for each conflict","2. Write merged content to the file","3. git add <file>","4. git rebase --continue","5. Run bingo-light status to verify"],"abort_cmd":"git rebase --abort","next":"Run bingo-light conflict-analyze --json to see conflict details, then resolve each file"}'
         else
             warn "Smart sync: $conflicts_resolved conflict(s) auto-resolved, but manual resolution needed."
             echo ""
