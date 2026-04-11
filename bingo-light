@@ -276,7 +276,7 @@ cmd_init() {
     fi
 
     if [[ "$JSON_MODE" == true ]]; then
-        json_out '{"ok":true,"upstream":"'"$upstream_url"'","branch":"'"$upstream_branch"'","tracking":"'"$TRACKING_BRANCH"'","patches":"'"$PATCHES_BRANCH"'"}'
+        json_out '{"ok":true,"upstream":"'"$(echo "$upstream_url" | json_escape)"'","branch":"'"$upstream_branch"'","tracking":"'"$TRACKING_BRANCH"'","patches":"'"$PATCHES_BRANCH"'"}'
     else
         echo ""
         success "bingo-light initialized!"
@@ -483,7 +483,7 @@ patch_list() {
             files_count=$(git diff-tree --no-commit-id -r "$hash" | wc -l)
             stat=$(git diff-tree --no-commit-id --shortstat "$hash" 2>/dev/null | sed 's/^ //' | json_escape)
             [[ "$first" == true ]] && first=false || json_patches+=","
-            json_patches+='{"name":"'"$pname"'","hash":"'"$short_hash"'","subject":"'"$(echo "$subject" | json_escape)"'","files":'"$files_count"',"stat":"'"$stat"'"}'
+            json_patches+='{"name":"'"$(echo "$pname" | json_escape)"'","hash":"'"$short_hash"'","subject":"'"$(echo "$subject" | json_escape)"'","files":'"$files_count"',"stat":"'"$stat"'"}'
         done <<< "$commits"
         json_patches+="]"
         json_out '{"ok":true,"patches":'"$json_patches"',"count":'"$total"'}'
@@ -570,7 +570,7 @@ patch_show() {
         [[ "$raw_subj" =~ ^\[bl\]\ ([^:]+): ]] && pname="${BASH_REMATCH[1]}"
         stat=$(git diff-tree --no-commit-id --shortstat "$hash" 2>/dev/null | sed 's/^ //' | json_escape)
         diff_content=$(git diff-tree --no-commit-id -p "$hash" | json_escape)
-        json_out '{"ok":true,"patch":{"name":"'"$pname"'","hash":"'"$short_hash"'","subject":"'"$subject"'","stat":"'"$stat"'","diff":"'"$diff_content"'"}}'
+        json_out '{"ok":true,"patch":{"name":"'"$(echo "$pname" | json_escape)"'","hash":"'"$short_hash"'","subject":"'"$subject"'","stat":"'"$stat"'","diff":"'"$diff_content"'"}}'
         return 0
     fi
 
@@ -614,7 +614,7 @@ patch_drop() {
 
     if git rebase --onto "${hash}^" "$hash" "$PATCHES_BRANCH" 2>/dev/null; then
         if [[ "$JSON_MODE" == true ]]; then
-            json_out '{"ok":true,"dropped":"'"$pname"'","hash":"'"$(git rev-parse --short "$hash")"'"}'
+            json_out '{"ok":true,"dropped":"'"$(echo "$pname" | json_escape)"'","hash":"'"$(git rev-parse --short "$hash")"'"}'
         else
             success "Patch dropped."
         fi
@@ -1544,7 +1544,11 @@ cmd_undo() {
     current_head=$(git rev-parse "$PATCHES_BRANCH")
 
     if [[ "$prev_head" == "$current_head" ]]; then
-        info "Nothing to undo."
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"message":"nothing to undo"}'
+        else
+            info "Nothing to undo."
+        fi
         return 0
     fi
 
@@ -2013,7 +2017,7 @@ print(script)
     if GIT_SEQUENCE_EDITOR="bash $editor_script" git rebase -i "$base" &>/dev/null; then
         rm -f "$editor_script"
         if [[ "$JSON_MODE" == true ]]; then
-            json_out '{"ok":true,"reordered":"'"$order_str"'"}'
+            json_out '{"ok":true,"reordered":"'"$(echo "$order_str" | json_escape)"'"}'
         else
             success "Patches reordered: $order_str"
         fi
@@ -2189,7 +2193,7 @@ json.dump(data, tmp, indent=2)
 tmp.close()
 os.replace(tmp.name, cfg)
 print(f'OK Added: {alias} ({rpath})')
-" 2>/dev/null
+" 2>/dev/null | { [[ "$JSON_MODE" == true ]] && cat >/dev/null || cat; }
             if [[ "$JSON_MODE" == true ]]; then
                 json_out '{"ok":true,"added":"'"$(echo "$alias" | json_escape)"'","path":"'"$(echo "$repo_path" | json_escape)"'"}'
             fi
