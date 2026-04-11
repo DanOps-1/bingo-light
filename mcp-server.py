@@ -461,11 +461,13 @@ def run_bl(args: list[str], cwd: str, input_text: str = "", env_extra: dict = No
             input=input_text or None,
             env=env,
         )
-        output = result.stdout
-        if result.stderr:
-            output += "\n" + result.stderr
+        output = result.stdout.strip()
+        # Don't append stderr to stdout — it would corrupt JSON output.
+        # Only use stderr if stdout is empty (command failed without JSON output).
+        if not output and result.stderr:
+            output = result.stderr.strip()
         return {
-            "content": [{"type": "text", "text": output.strip()}],
+            "content": [{"type": "text", "text": output}],
             "isError": result.returncode != 0,
         }
     except FileNotFoundError:
@@ -571,7 +573,9 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
                 cwd=cwd, capture_output=True, text=True, timeout=60,
                 env={**os.environ, "GIT_EDITOR": "true"},
             )
-            output = result.stdout + "\n" + result.stderr
+            output = result.stdout
+            if result.stderr:
+                output += "\n" + result.stderr
             return {
                 "content": [{"type": "text", "text": output.strip()}],
                 "isError": result.returncode != 0,
