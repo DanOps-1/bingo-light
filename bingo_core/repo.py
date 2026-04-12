@@ -200,6 +200,58 @@ class Repo:
                 "Must start with a letter or number."
             )
 
+    def _current_rebase_patch(self) -> str:
+        """Read the current patch subject from an in-progress rebase.
+
+        Returns the first line of .git/rebase-merge/message, or "" if
+        unavailable. Used by conflict_analyze() and _smart_sync_locked().
+        """
+        msg_file = os.path.join(self.path, ".git", "rebase-merge", "message")
+        if os.path.isfile(msg_file):
+            try:
+                with open(msg_file) as f:
+                    return f.readline().strip()
+            except IOError:
+                pass
+        return ""
+
+    def _build_conflict_result(
+        self,
+        conflicted_files: List[str],
+        **extra: object,
+    ) -> dict:
+        """Build a standardized conflict result dict.
+
+        Extracts conflict details for each file and includes the current
+        rebase patch. Callers can pass additional keys via **extra which
+        are merged into the returned dict.
+
+        Always includes:
+            ok, conflict, current_patch, conflicted_files,
+            conflicts, resolution_steps, abort_cmd
+        """
+        conflicts = [self._extract_conflict(f) for f in conflicted_files]
+        current_patch = self._current_rebase_patch()
+
+        result: dict = {
+            "ok": False,
+            "conflict": True,
+            "current_patch": current_patch,
+            "conflicted_files": conflicted_files,
+            "conflicts": [c.to_dict() for c in conflicts],
+            "resolution_steps": [
+                "1. Read ours (upstream) and theirs (your patch) for each conflict",
+                "2. Write the merged file content (include both changes where possible)",
+                "3. Run: git add <conflicted-files>",
+                "4. Run: bingo-light conflict-resolve (or git rebase --continue)",
+                "5. If more conflicts appear, repeat from step 1",
+                "6. To abort instead: git rebase --abort",
+            ],
+            "abort_cmd": "git rebase --abort",
+        }
+        result.update(extra)
+        return result
+
     _CONFLICT_SIZE_LIMIT = 1024 * 1024  # 1MB per file
 
     def _extract_conflict(self, filepath: str) -> ConflictInfo:
@@ -819,16 +871,7 @@ class Repo:
         if not conflicted:
             return {"ok": True, "in_rebase": True, "conflicts": []}
 
-        # Get current patch info
-        current_patch = ""
-        msg_file = os.path.join(self.path, ".git", "rebase-merge", "message")
-        if os.path.isfile(msg_file):
-            try:
-                with open(msg_file) as f:
-                    current_patch = f.readline().strip()
-            except IOError:
-                pass
-
+        current_patch = self._current_rebase_patch()
         conflicts = [self._extract_conflict(f) for f in conflicted]
 
         return {
@@ -840,7 +883,7 @@ class Repo:
                 "1. Read ours (upstream) and theirs (your patch) for each conflict",
                 "2. Write the merged file content (include both changes where possible)",
                 "3. Run: git add <conflicted-files>",
-                "4. Run: git rebase --continue",
+                "4. Run: bingo-light conflict-resolve (or git rebase --continue)",
                 "5. If more conflicts appear, repeat from step 1",
                 "6. To abort instead: git rebase --abort",
             ],
@@ -1085,20 +1128,17 @@ class Repo:
         self.state.run_hook("on-conflict", {"patch_count": patch_count})
 
         conflicted_files = self.git.ls_files_unmerged()
-        return {
-            "ok": False,
-            "synced": False,
-            "conflict": True,
-            "conflicted_files": conflicted_files,
-            "abort_cmd": "git rebase --abort",
-            "next": (
+        return self._build_conflict_result(
+            conflicted_files,
+            synced=False,
+            next=(
                 "Run bingo-light conflict-analyze --json to see conflict details, "
                 "then resolve each file"
             ),
-            "tracking_restore": (
+            tracking_restore=(
                 f"git branch -f {c['tracking_branch']} {saved_tracking}"
             ),
-        }
+        )
 
     def smart_sync(self) -> dict:
         """Smart sync: circuit breaker + auto-rerere + detailed conflict JSON.
@@ -1238,38 +1278,20 @@ class Repo:
             # Circuit breaker: increment failure count
             self.state.record_circuit_breaker(upstream_target)
 
-            # Build conflict details
-            conflicts = [self._extract_conflict(f) for f in unresolved]
-
-            current_patch = ""
-            msg_file = os.path.join(self.path, ".git", "rebase-merge", "message")
-            if os.path.isfile(msg_file):
-                try:
-                    with open(msg_file) as f:
-                        current_patch = f.readline().strip()
-                except IOError:
-                    pass
-
-            return {
-                "ok": False,
-                "action": "needs_human",
-                "behind_before": behind,
-                "conflicts_auto_resolved": conflicts_resolved,
-                "current_patch": current_patch,
-                "remaining_conflicts": [c_.to_dict() for c_ in conflicts],
-                "resolution_steps": [
-                    "1. Read ours/theirs for each conflict",
-                    "2. Write merged content to the file",
-                    "3. git add <file>",
-                    "4. git rebase --continue",
-                    "5. Run bingo-light smart-sync again to continue",
+            result = self._build_conflict_result(
+                unresolved,
+                action="needs_human",
+                behind_before=behind,
+                conflicts_auto_resolved=conflicts_resolved,
+                remaining_conflicts=[
+                    self._extract_conflict(f).to_dict() for f in unresolved
                 ],
-                "abort_cmd": "git rebase --abort",
-                "next": (
+                next=(
                     "For each conflict: read merge_hint, write merged file, "
                     "git add, git rebase --continue"
                 ),
-            }
+            )
+            return result
 
         # If we get here, all conflicts were auto-resolved by rerere
         self.state.clear_circuit_breaker()
