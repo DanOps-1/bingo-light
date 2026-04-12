@@ -58,6 +58,40 @@ def section(title: str):
 
 # ─── MCP framing helpers ────────────────────────────────────────────────────
 
+def jsonline_message(obj: dict) -> bytes:
+    """Encode a JSON-RPC message as a bare JSON line (standard MCP stdio)."""
+    return json.dumps(obj).encode('utf-8') + b'\n'
+
+
+def send_receive_jsonline(messages: list, timeout: int = 10) -> list:
+    """Send bare JSON lines to MCP server and parse newline-delimited responses."""
+    proc = subprocess.Popen(
+        [sys.executable, MCP_SERVER],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={**os.environ, 'BINGO_LIGHT_BIN': BL_BIN},
+    )
+    payload = b''
+    for msg in messages:
+        payload += jsonline_message(msg)
+    try:
+        stdout_data, _ = proc.communicate(input=payload, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        return []
+    responses = []
+    for line in stdout_data.decode('utf-8', errors='replace').splitlines():
+        line = line.strip()
+        if line:
+            try:
+                responses.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return responses
+
+
 def frame_message(obj: dict) -> bytes:
     """Encode a JSON-RPC message with Content-Length framing."""
     body = json.dumps(obj).encode('utf-8')
@@ -278,6 +312,37 @@ def test_protocol_basics():
         ok('multiple messages in one session')
     else:
         fail('multiple messages in one session', f'expected 3 responses, got {len(resps)}')
+
+
+def test_jsonline_framing():
+    """Test bare JSON line framing (standard MCP stdio, used by all major clients)."""
+    section('1b. Bare JSON line framing (standard MCP)')
+
+    # Initialize via bare JSON lines
+    init_msg = make_request('initialize', {
+        'protocolVersion': '2025-11-25',
+        'capabilities': {'roots': {}},
+        'clientInfo': {'name': 'test-client', 'version': '1.0'},
+    })
+    tools_msg = make_request('tools/list')
+    ping_msg = make_request('ping')
+
+    resps = send_receive_jsonline([init_msg, tools_msg, ping_msg])
+
+    if len(resps) >= 1 and resps[0].get('result', {}).get('serverInfo', {}).get('name') == 'bingo-light':
+        ok('jsonline: initialize response valid')
+    else:
+        fail('jsonline: initialize response', f'got {resps[0] if resps else "nothing"}')
+
+    if len(resps) >= 2 and len(resps[1].get('result', {}).get('tools', [])) >= 29:
+        ok(f'jsonline: tools/list returns {len(resps[1]["result"]["tools"])} tools')
+    else:
+        fail('jsonline: tools/list', f'got {len(resps[1].get("result", {}).get("tools", [])) if len(resps) >= 2 else 0} tools')
+
+    if len(resps) >= 3 and 'result' in resps[2]:
+        ok('jsonline: ping response valid')
+    else:
+        fail('jsonline: ping response', f'got {resps[2] if len(resps) >= 3 else "nothing"}')
 
 
 def test_tool_smoke(fork_dir: str, upstream_dir: str):
@@ -625,6 +690,7 @@ def main():
         upstream_dir, fork_dir = make_test_repos(tmpdir)
 
         test_protocol_basics()
+        test_jsonline_framing()
         test_tool_smoke(fork_dir, upstream_dir)
         test_malformed_requests()
         test_cwd_validation()

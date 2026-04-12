@@ -649,9 +649,13 @@ _PARSE_ERROR = object()  # Sentinel: bad message, but not EOF
 def read_message():
     """Read a JSON-RPC message from stdin (MCP stdio transport).
 
-    Supports two framing modes:
-    - Content-Length header framing (standard MCP spec)
-    - Bare JSON lines (used by Claude Code 2.x)
+    MCP spec defines stdio as newline-delimited JSON (every version since
+    2024-11-05). All major clients (Claude Code, Cursor, Windsurf, Cline,
+    Continue, Roo Code, Gemini CLI, Codex CLI, Zed, JetBrains, GitHub
+    Copilot) send bare JSON lines.
+
+    Also supports Content-Length header framing (LSP-style) as a fallback
+    for compatibility with older test infrastructure.
 
     Returns dict on success, None on EOF, _PARSE_ERROR on bad input.
     """
@@ -661,19 +665,18 @@ def read_message():
 
     stripped = line.strip()
     if not stripped:
-        # Empty line — skip and retry
-        return _PARSE_ERROR
+        return _PARSE_ERROR  # Empty line — skip
 
-    # Bare JSON line mode (no Content-Length header)
+    # Standard MCP: newline-delimited JSON
     if stripped.startswith("{"):
-        global _use_bare_json
-        _use_bare_json = True
         try:
             return json.loads(stripped)
         except json.JSONDecodeError:
             return _PARSE_ERROR
 
-    # Content-Length header framing mode
+    # Fallback: Content-Length header framing (LSP-style)
+    global _use_content_length
+    _use_content_length = True
     headers = {}
     if ":" in stripped:
         key, value = stripped.split(":", 1)
@@ -706,19 +709,19 @@ def read_message():
         return _PARSE_ERROR
 
 
-# Auto-detect framing mode based on first message received
-_use_bare_json = False
+# Framing mode: newline-delimited JSON by default (MCP spec),
+# switches to Content-Length if client sends headers.
+_use_content_length = False
 
 
 def send_message(msg: dict):
     """Write a JSON-RPC message to stdout (MCP stdio transport)."""
     body = json.dumps(msg)
-    if _use_bare_json:
-        sys.stdout.write(body + "\n")
-    else:
-        header = f"Content-Length: {len(body.encode())}\r\n\r\n"
-        sys.stdout.write(header)
+    if _use_content_length:
+        sys.stdout.write(f"Content-Length: {len(body.encode())}\r\n\r\n")
         sys.stdout.write(body)
+    else:
+        sys.stdout.write(body + "\n")
     sys.stdout.flush()
 
 
