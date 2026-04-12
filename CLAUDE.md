@@ -62,23 +62,43 @@ python3 -c "import py_compile; py_compile.compile('mcp-server.py', doraise=True)
 - MCP server version must match CLI VERSION (currently 2.0.0)
 - `_fix_stale_tracking()`: auto-repairs tracking branch after manual conflict resolution, skipped if `.bingo/.undo-active` exists or rebase is in progress
 
+## Sync points — data that lives in multiple files
+
+**VERSION** (currently 2.0.0) — change ALL of these together:
+- `bingo_core.py:25` — source of truth
+- `pyproject.toml` — `version`
+- `mcp-server.py` — `"version"` in initialize response
+- `contrib/homebrew/bingo-light.rb` — tar.gz URL
+- `CHANGELOG.md` — must have a matching `## [x.x.x]` entry
+
+**MCP tool count** (currently 29) — change ALL of these together:
+- `mcp-server.py` TOOLS array — source of truth
+- `README.md` — badge + body text (4+ places)
+- `README.zh-CN.md` — badge + body text (4+ places)
+- `docs/getting-started.md` — tool count
+- `install.sh` — display text
+- `tests/test.sh` section 15 — count assertion
+
+**bingo-light ↔ bingo_light_cli.py** — must be identical. After editing `bingo-light`, always `cp bingo-light bingo_light_cli.py`.
+
+**README.md ↔ README.zh-CN.md** — parallel documents. Structural changes must be mirrored: badges, features, comparison table, install methods, MCP tool table, project ecosystem.
+
 ## When adding a new command
 
-1. Add the method in `bingo_core.py` (in `Repo` class)
-2. Return a dict with `ok` key
-3. Add dispatch in `bingo-light` CLI (argparse + dispatch function)
-4. Add human-readable formatter in `bingo-light` if needed
-5. Add to all 3 shell completions (`completions/*.bash`, `.zsh`, `.fish`)
-6. Add to `llms.txt` command reference
-7. Update README.md and README.zh-CN.md if user-facing
+1. `bingo_core.py` — add method to `Repo` class, return dict with `ok` key
+2. `bingo-light` — add argparse + dispatch + formatter
+3. `bingo_light_cli.py` — copy from `bingo-light`
+4. `completions/*.bash`, `.zsh`, `.fish` — add to completion list
+5. `llms.txt` — add to command reference
+6. `README.md` + `README.zh-CN.md` — add to Command Reference
+7. Tests — add to `test.sh` or `test_core.py`
 
 ## When adding a new MCP tool
 
-1. Add tool definition to `TOOLS` array in `mcp-server.py`
-2. Add handler in `handle_tool_call()`
-3. `run_bl()` auto-adds `--json --yes` — don't add them manually
-4. Update MCP tool tables in README.md, README.zh-CN.md, CLAUDE.md
-5. Update badge count if it changed
+1. `mcp-server.py` — add to TOOLS array + `handle_tool_call()`
+2. `run_bl()` auto-adds `--json --yes` — don't add them manually
+3. Update MCP tool count in ALL files listed in "Sync points" above
+4. `tests/test-mcp.py` — add smoke test
 
 ## For AI agents: prefer MCP or --json
 
