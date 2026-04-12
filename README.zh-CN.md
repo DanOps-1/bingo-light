@@ -14,8 +14,9 @@
   <a href="https://github.com/DanOps-1/bingo-light/actions"><img src="https://github.com/DanOps-1/bingo-light/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href="https://github.com/DanOps-1/bingo-light/releases"><img src="https://img.shields.io/github/v/release/DanOps-1/bingo-light?label=Release&color=orange" alt="Release"></a>
-  <a href="#mcp-服务器"><img src="https://img.shields.io/badge/MCP-27_tools-blueviolet.svg" alt="MCP: 27 tools"></a>
-  <a href="https://www.gnu.org/software/bash/"><img src="https://img.shields.io/badge/Made_with-Bash-1f425f.svg" alt="Bash"></a>
+  <a href="#mcp-服务器"><img src="https://img.shields.io/badge/MCP_Server-29_tools-blueviolet.svg" alt="MCP: 27 tools"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.8+-3776ab.svg" alt="Python 3.8+"></a>
+  <a href="https://pypi.org/project/bingo-light/"><img src="https://img.shields.io/pypi/v/bingo-light?color=blue&label=PyPI" alt="PyPI"></a>
   <img src="https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg" alt="Zero deps">
   <a href="https://github.com/DanOps-1/bingo-light/stargazers"><img src="https://img.shields.io/github/stars/DanOps-1/bingo-light?style=social" alt="Stars"></a>
   <br><br>
@@ -168,7 +169,7 @@ curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/bingo-lig
 
 | 功能 | 说明 |
 |------|------|
-| **MCP 服务器** | 27 个工具，覆盖从初始化到冲突解决的全流程 |
+| **MCP 服务器** | 29 个工具，覆盖从初始化到冲突解决的全流程 |
 | **`--json` 标志** | 所有命令返回结构化 JSON |
 | **`--yes` 标志** | 完全非交互，不需要 TTY |
 | **自动检测非 TTY** | 管道或子进程调用时自动抑制交互提示 |
@@ -181,7 +182,7 @@ curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/bingo-lig
 
 | 功能 | 说明 |
 |------|------|
-| **单文件，零依赖** | bash + git，扔进 PATH 就能跑 |
+| **零依赖** | Python 3 + git，`pip install bingo-light` 即可 |
 | **命名补丁栈** | 每个改动都是一个独立的、有名字的 commit |
 | **一键同步** | `bingo-light sync` 把你的补丁变基到上游之上 |
 | **预演模式** | `sync --dry-run` 先在临时分支上试跑 |
@@ -227,7 +228,7 @@ curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/bingo-lig
 
 ## MCP 服务器
 
-`mcp-server.py` 是零依赖的 Python 3 MCP 服务器，通过 stdio 暴露 27 个工具（JSON-RPC 2.0）。
+`mcp-server.py` 是零依赖的 Python 3 MCP 服务器，通过 stdio 暴露 29 个工具（JSON-RPC 2.0）。
 
 ### 配置
 
@@ -447,18 +448,19 @@ bingo-light 在 `init` 时自动启用 git 的 `rerere`（reuse recorded resolut
 | 一键上游同步 | **有** | 无（多步操作） | 无（纯手动） | 部分 |
 | 冲突记忆 (rerere) | **自动** | 需手动启用 | 无 | 无 |
 | 冲突预测 | **有** | 无 | 无 | 无 |
-| AI/MCP 集成 | **27 个工具** | 无 | 无 | 无 |
+| AI/MCP 集成 | **29 个工具** | 无 | 无 | 无 |
 | 结构化 JSON 输出 | **所有命令** | 无 | 无 | 部分 |
 | 非交互模式 | **原生支持** | 部分 | 部分 | 有 |
 | 依赖 | bash + git | git | quilt | 语言特定 |
-| 安装方式 | 单文件复制 | 内置 | 包管理器 | 包管理器 |
+| 安装方式 | `pip install` | 内置 | 包管理器 | 包管理器 |
 | 撤销同步 | **一条命令** | git reflog | 手动 | 看情况 |
 
 ## 项目生态
 
 ```
-bingo-light          CLI 核心（单文件 bash 脚本）
-mcp-server.py        MCP 服务器（零依赖 Python 3，27 个工具）
+bingo-light          CLI 入口（Python 3，零依赖）
+bingo_core.py        核心库（全部业务逻辑）
+mcp-server.py        MCP 服务器（零依赖 Python 3，29 个工具）
 agent.py             Advisor 代理（监控 + 分析 + 安全时自动同步）
 tui.py               终端面板（curses TUI）
 install.sh           交互式安装器（动画 TUI）
@@ -470,7 +472,7 @@ docs/                文档
 
 ## 参与贡献
 
-欢迎贡献。整个 CLI 就是一个 bash 脚本（`bingo-light`）。MCP 服务器是一个 Python 文件（`mcp-server.py`）。不需要构建。
+欢迎贡献。纯 Python，零依赖，不需要构建。
 
 ```bash
 git clone https://github.com/DanOps-1/bingo-light.git

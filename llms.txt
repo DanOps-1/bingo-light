@@ -2,7 +2,7 @@
 
 > Dead-simple fork maintenance CLI. Manages customizations as a clean patch stack on top of upstream open-source projects.
 
-Single-file bash tool. Zero dependencies beyond git + bash.
+Python CLI tool. Zero dependencies beyond Python 3.8+ and git.
 
 ## Problem it solves
 

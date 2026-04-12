@@ -4,32 +4,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-bingo-light is an AI-native fork maintenance tool. It manages customizations as a clean patch stack on top of upstream, with `--json` and `--yes` flags for AI agent consumption. Single bash script (~2500 lines) + MCP server (Python 3, 27 tools).
+bingo-light is an AI-native fork maintenance tool. It manages customizations as a clean patch stack on top of upstream, with `--json` and `--yes` flags for AI agent consumption. Python CLI (`bingo-light` + `bingo_core.py`) + MCP server (Python 3, 29 tools).
 
 ## Commands
 
 ```bash
 make test          # run core test suite (tests/test.sh)
-make lint          # shellcheck on bingo-light
+make lint          # python syntax + flake8 + shellcheck
+make test-all      # all 250 tests (core + fuzz + edge + MCP + unit)
 
-# Full test pipeline (178 tests across 4 suites):
+# Full test pipeline (250 tests across 5 suites):
 ./tests/run-all.sh              # all suites + coverage report
 ./tests/test.sh                 # core functional tests
 ./tests/test-json.sh            # JSON fuzz with dangerous inputs
 ./tests/test-edge.sh            # git state boundary tests
 python3 ./tests/test-mcp.py     # MCP protocol tests
-
-# Run a single test section (by number):
-# Not directly supported — run full suite. Tests take ~10s.
+python3 ./tests/test_core.py    # Python unit tests
 
 # Syntax check without running:
-bash -n bingo-light
+python3 -c "import py_compile; py_compile.compile('bingo-light', doraise=True)"
+python3 -c "import py_compile; py_compile.compile('bingo_core.py', doraise=True)"
 python3 -c "import py_compile; py_compile.compile('mcp-server.py', doraise=True)"
 ```
 
 ## Architecture
 
-**bingo-light** (bash) — The entire CLI. All business logic lives here. Uses `set -euo pipefail`. Every command has two output paths: human-readable (default) and JSON (`--json` flag). JSON output uses `json_out()` + `json_escape()` (awk-based, POSIX-compatible). Config stored in `.bingolight` via `git config --file`.
+**bingo-light** (Python 3) — CLI entry point. Delegates all business logic to `bingo_core.Repo`. Handles argparse, human-readable formatting, and exit codes. Every command has two output paths: human-readable (default) and JSON (`--json` flag).
+
+**bingo_core.py** (Python 3) — Core library. All business logic: sync, patches, conflict analysis, workspace, doctor, etc. Config stored in `.bingolight` via `git config --file`. Uses `.bingo/.lock` for concurrency protection.
 
 **mcp-server.py** (Python 3, stdlib only) — Thin MCP wrapper over the CLI. Calls `run_bl()` which spawns `bingo-light --json --yes` as a subprocess. Adds `--json --yes` to ALL commands automatically. Has `try/except` around `handle_tool_call()` to prevent crashes from bad input. Uses Content-Length framed JSON-RPC 2.0 over stdio.
 
@@ -39,28 +41,13 @@ python3 -c "import py_compile; py_compile.compile('mcp-server.py', doraise=True)
 
 ## Critical patterns to follow when editing
 
-**JSON output**: Every `json_out` call with a user-controlled variable MUST use `json_escape`:
-```bash
-# CORRECT:
-json_out '{"ok":true,"name":"'"$(echo "$name" | json_escape)"'"}'
-# WRONG (injection risk):
-json_out '{"ok":true,"name":"'"$name"'"}'
-```
-Only exception: known integers (`$behind`, `$count`) and controlled constants (`$TRACKING_BRANCH`).
+**Return dicts, not prints**: Every `Repo` method returns a dict with `ok` key. The CLI formats it for human output. Never `print()` from `bingo_core.py`.
 
-**JSON mode guard**: Every function that produces output MUST have a JSON mode path. No function should return 0 with empty stdout when `JSON_MODE=true`.
+**Git subprocess safety**: All `git` calls go through `Git.run()` / `Git.run_ok()` / `Git.run_unchecked()`. Never use `subprocess.run(["git", ...])` directly except in rebase continue paths (which need custom env).
 
-**Git output suppression**: All `git checkout`, `git branch -f`, `git commit`, `git rebase`, `git am` calls MUST use `&>/dev/null` to prevent stdout leaking into JSON output.
+**Concurrency**: Destructive operations (sync, smart_sync) must use `self.state.acquire_lock()` / `release_lock()` in a try/finally.
 
-**No shell interpolation in python3 -c**: Pass data via stdin, not `$VAR` in the Python string:
-```bash
-# CORRECT:
-printf '%s' "$var" | python3 -c "import sys; data=sys.stdin.read()"
-# WRONG:
-python3 -c "data='$var'"
-```
-
-**awk must be POSIX**: No gawk extensions. No 3-argument `match(s, r, array)`. Use `match()` + `substr()` + `sub()`.
+**Config security**: `.bingolight` must NOT be tracked by git. `_load()` checks this and rejects tracked configs (upstream injection risk). `test.command` runs via `bash -c` — the value comes from config, so this is a trust boundary.
 
 **Conflict detection**: Use `git ls-files --unmerged | cut -f2 | sort -u`, NOT `git diff --name-only --diff-filter=U` (misses delete/modify and rename conflicts).
 
@@ -72,15 +59,15 @@ python3 -c "data='$var'"
 - Patch ID: commit messages matching `[bl] <name>: <desc>`
 - Patch names: validated to `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`
 - Branches: `upstream-tracking` (mirror), `bingo-patches` (patches on top)
-- MCP server version must match CLI VERSION (currently 1.2.0)
+- MCP server version must match CLI VERSION (currently 2.0.0)
 - `_fix_stale_tracking()`: auto-repairs tracking branch after manual conflict resolution, skipped if `.bingo/.undo-active` exists or rebase is in progress
 
 ## When adding a new command
 
-1. Add the function in `bingo-light`
-2. Add JSON output path with `json_out` + proper escaping
-3. Add to `show_help()` function
-4. Add to `main()` dispatch
+1. Add the method in `bingo_core.py` (in `Repo` class)
+2. Return a dict with `ok` key
+3. Add dispatch in `bingo-light` CLI (argparse + dispatch function)
+4. Add human-readable formatter in `bingo-light` if needed
 5. Add to all 3 shell completions (`completions/*.bash`, `.zsh`, `.fish`)
 6. Add to `llms.txt` command reference
 7. Update README.md and README.zh-CN.md if user-facing

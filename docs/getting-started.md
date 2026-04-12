@@ -24,7 +24,7 @@ sudo cp bingo-light /usr/local/bin/ && chmod +x /usr/local/bin/bingo-light
 ./bingo-light --help
 ```
 
-**Requirements:** bash 4.0+, git 2.20+, Python 3.8+ (for MCP server only)
+**Requirements:** Python 3.8+, git 2.20+
 
 ## 5-Minute Quickstart
 
@@ -73,7 +73,7 @@ Add to `~/.claude/settings.json` or `.mcp.json`:
 }
 ```
 
-22 MCP tools are available. See the [README](../README.md#mcp-server) for the full list.
+29 MCP tools are available. See the [README](../README.md#for-ai-agents) for the full list.
 
 ## Next steps
 

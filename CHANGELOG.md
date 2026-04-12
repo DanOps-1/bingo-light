@@ -3,6 +3,38 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.0] - 2026-04-12
+
+### Changed
+- **Complete Python rewrite**: CLI rewritten from Bash to Python 3 (`bingo-light` + `bingo_core.py`)
+- MCP server now exposes 29 tools (was 22)
+- `pip install bingo-light` now supported via pyproject.toml
+
+### Added
+- Concurrency protection via `.bingo/.lock` (PID-based liveness check)
+- Config hijack guard: rejects `.bingolight` if tracked by git
+- `_in_rebase()` guard on sync/smart_sync entry
+- `patch_edit` saves HEAD before fixup, auto-rollback on conflict
+- `doctor` checks: rebase state, tracking freshness, .bingo/ directory
+- Path traversal protection in patch_export/patch_import
+- Binary file support in patch file count (numstat `-\t-\t` format)
+- GitHub Actions release workflow (tag → GitHub Release + PyPI)
+- pyproject.toml, CODEOWNERS, dependabot.yml, SVG logo
+
+### Fixed
+- sync reported success on rebase conflict (false positive)
+- smart_sync saved empty string as undo state
+- patch_edit left orphaned fixup commit on rebase failure
+- CLI returned exit code 0 on `ok: false` results
+- auto_sync YAML injection via unescaped config values
+- workspace_sync crashed on deleted repos
+- 45 bugs total across all files (see commit `9771883` for full list)
+
+### Security
+- Config injection via `.bingolight` blocked (tracked file detection)
+- Shell injection in auto_sync workflow generation fixed (shlex.quote + regex validation)
+- Path traversal in patch_export/patch_import blocked
+
 ## [1.1.0] - 2026-04-11
 
 ### Added

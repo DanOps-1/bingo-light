@@ -270,7 +270,7 @@ step_mcp() {
 
     box_top
     box_line "Connect bingo-light to AI assistants."
-    box_line "22 tools for Claude Code, Cursor, etc."
+    box_line "29 tools for Claude Code, Cursor, etc."
     box_empty
     box_line "  ${C_DIM}AI calls bingo_sync(cwd=\"/repo\")${C_RESET}"
     box_line "  ${C_DIM}→ patches rebased automatically${C_RESET}"

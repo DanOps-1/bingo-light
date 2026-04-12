@@ -7,15 +7,16 @@ Thanks for your interest in contributing! This guide covers everything you need.
 ```bash
 git clone https://github.com/DanOps-1/bingo-light.git
 cd bingo-light
-make test    # run 71 tests
-make lint    # shellcheck
+make test      # run core test suite
+make test-all  # all 250 tests
+make lint      # python syntax + flake8 + shellcheck
 ```
 
 ## Reporting bugs
 
 Open an issue using the **Bug Report** template. Include:
 - bingo-light version (`bingo-light version`)
-- OS and bash version (`bash --version`)
+- OS and Python version (`python3 --version`)
 - Steps to reproduce and error output
 
 ## Submitting changes
@@ -29,12 +30,13 @@ Open an issue using the **Bug Report** template. Include:
 ## Project structure
 
 ```
-bingo-light          # Main CLI (single bash script)
-mcp-server.py        # MCP server (zero-dep Python 3)
+bingo-light          # Python CLI (entry point)
+bingo_core.py        # Core library (all business logic)
+mcp-server.py        # MCP server (zero-dep Python 3, 29 tools)
 agent.py             # Advisor agent
 tui.py               # Terminal dashboard
 install.sh           # Interactive installer
-tests/test.sh        # Test suite (71 tests)
+tests/               # Test suites (250 tests across 5 files)
 completions/         # bash/zsh/fish tab completion
 contrib/hooks/       # Example notification hooks
 docs/                # Additional documentation
@@ -42,10 +44,10 @@ docs/                # Additional documentation
 
 ## Code style
 
-- **Single-file CLI**: `bingo-light` is one bash script. Keep it that way.
-- **ShellCheck clean**: all code must pass `shellcheck` with zero warnings
+- **Two-file Python CLI**: `bingo-light` is the entry point, `bingo_core.py` has all logic. Keep the separation.
+- **Flake8 clean**: all Python code must pass flake8
+- **ShellCheck clean**: all bash code must pass shellcheck
 - **snake_case** for variables and functions
-- **No shell variable interpolation** in `python3 -c` calls -- pass data via stdin
 - Prefer clarity over cleverness
 
 ## Commit messages
