@@ -219,7 +219,7 @@ def _format_history(result: dict) -> str:
         lines.append(f"  {_c(BOLD, 'Sync')} @ {ts}")
         lines.append(f"    Upstream: {before} \u2192 {after} ({n} commit(s))")
         if patches:
-            lines.append(f"    Patches rebased:")
+            lines.append("    Patches rebased:")
             for p in patches:
                 name = p.get("name", "?")
                 h = p.get("hash", "?")[:7]

@@ -15,11 +15,8 @@ from typing import List, Optional
 
 from bingo_core import (
     PATCH_PREFIX,
-    CONFIG_FILE,
-    BINGO_DIR,
     DEFAULT_TRACKING,
     DEFAULT_PATCHES,
-    MAX_PATCHES,
     MAX_DIFF_SIZE,
     PATCH_NAME_RE,
     PATCH_NAME_MAX,
