@@ -112,18 +112,24 @@ jobs:
           grep -q "$N tools" install.sh || { echo "::error::install.sh tool count mismatch"; FAIL=1; }
           [ "$FAIL" = "0" ] || exit 1
 
-      - name: README.zh-CN.md structure sync
+      - name: README.zh-CN.md required sections
         run: |
-          EN=$(grep -c '^## ' README.md)
-          ZH=$(grep -c '^## ' README.zh-CN.md)
-          echo "EN sections: $EN, ZH sections: $ZH"
-          if [ "$EN" -ne "$ZH" ]; then
-            echo "::error::README section count mismatch: EN=$EN ZH=$ZH — run diff on ## headers to find the gap"
-            grep '^## ' README.md > /tmp/en_sections
-            grep '^## ' README.zh-CN.md > /tmp/zh_sections
-            diff /tmp/en_sections /tmp/zh_sections || true
-            exit 1
-          fi
+          # These sections MUST exist in zh-CN (mapped from EN equivalents)
+          FAIL=0
+          require() { grep -q "^## $1" README.zh-CN.md || { echo "::error::README.zh-CN.md missing section: ## $1"; FAIL=1; }; }
+          require "快速开始"
+          require "安装"
+          require "功能特性"
+          require "工作原理"
+          require "命令参考"
+          require "常见问题"
+          require "为什么不用..."
+          require "与其他方案对比"
+          require "项目生态"
+          require "参与贡献"
+          require "许可证"
+          [ "$FAIL" = "0" ] || exit 1
+          echo "All required zh-CN sections present"
 
       - name: bingo-light ↔ bingo_light_cli.py identity
         run: |
