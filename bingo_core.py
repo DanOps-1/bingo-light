@@ -2294,6 +2294,19 @@ class Repo:
             "files": patch_files,
         }
 
+    def _restore_bl_prefix(self) -> None:
+        """Restore [bl] prefix on HEAD if git am stripped it."""
+        try:
+            subject = self.git.run("log", "-1", "--format=%s", "HEAD")
+            if not subject.startswith(PATCH_PREFIX + " "):
+                body = self.git.run("log", "-1", "--format=%B", "HEAD")
+                subprocess.run(
+                    ["git", "commit", "--amend", "-m", PATCH_PREFIX + " " + body],
+                    cwd=self.path, capture_output=True, text=True,
+                )
+        except (GitError, OSError):
+            pass
+
     def patch_import(self, path: str) -> dict:
         """Import .patch file(s) into the stack.
 
@@ -2331,6 +2344,7 @@ class Repo:
                                 f"Failed to apply {line}. "
                                 "Run git am --abort to undo."
                             )
+                        self._restore_bl_prefix()
             else:
                 for pf in sorted(os.listdir(abs_path)):
                     if not pf.endswith(".patch"):
@@ -2342,6 +2356,7 @@ class Repo:
                         raise BingoError(
                             f"Failed to apply {pf}. Run git am --abort to undo."
                         )
+                    self._restore_bl_prefix()
         else:
             if not os.path.isfile(abs_path):
                 raise BingoError(f"File not found: {path}")
@@ -2350,6 +2365,7 @@ class Repo:
                 raise BingoError(
                     "Failed to apply patch. Run git am --abort to undo."
                 )
+            self._restore_bl_prefix()
 
         base = self._patches_base(c)
         imported_count = 0

@@ -161,10 +161,16 @@ def _format_doctor(result: dict) -> str:
         name = check.get("name", "?")
         status = check.get("status", "")
         ok = status == "pass" or check.get("ok", False)
-        symbol = _c(GREEN, "OK") if ok else _c(RED, "FAIL")
+        is_warn = status == "warn"
+        if ok:
+            symbol = _c(GREEN, "OK")
+        elif is_warn:
+            symbol = _c(YELLOW, "WARN")
+        else:
+            symbol = _c(RED, "FAIL")
         detail = check.get("detail", check.get("message", ""))
         lines.append(f"  {symbol}  {name}")
-        if detail and not ok:
+        if detail and (not ok or is_warn):
             lines.append(f"       {_c(DIM, detail)}")
     return "\n".join(lines)
 
@@ -673,10 +679,15 @@ def _dispatch_patch(args: argparse.Namespace, repo: Repo) -> dict:
         return repo.patch_squash(args.idx1, args.idx2)
 
     if pcmd == "meta":
+        meta_key = args.meta_key or ""
+        meta_value = args.meta_value or ""
+        # Support "set-reason VALUE" as shorthand for "reason VALUE"
+        if meta_key.startswith("set-") and meta_value:
+            meta_key = meta_key[4:]  # "set-reason" -> "reason"
         return repo.patch_meta(
             args.meta_target,
-            key=args.meta_key,
-            value=args.meta_value,
+            key=meta_key,
+            value=meta_value,
         )
 
     raise BingoError(f"Unknown patch subcommand: {pcmd}")
