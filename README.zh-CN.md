@@ -1,13 +1,8 @@
 <p align="center">
   <br>
-  <code>&nbsp;  _     _                         _ _       _     _    &nbsp;</code><br>
-  <code>&nbsp; | |__ (_)_ __   __ _  ___       | (_) __ _| |__ | |_  &nbsp;</code><br>
-  <code>&nbsp; | '_ \| | '_ \ / _` |/ _ \ ____| | |/ _` | '_ \| __| &nbsp;</code><br>
-  <code>&nbsp; | |_) | | | | | (_| | (_) |____| | | (_| | | | | |_  &nbsp;</code><br>
-  <code>&nbsp; |_.__/|_|_| |_|\__, |\___/     |_|_|\__, |_| |_|\__| &nbsp;</code><br>
-  <code>&nbsp;                |___/                 |___/             &nbsp;</code><br>
-  <br>
-  <strong>AI 原生的 Fork 维护工具。保留你的补丁，与上游保持同步。</strong>
+  <img src="docs/logo.svg" alt="bingo-light logo" width="200">
+  <br><br>
+  <strong>面向人类和 AI 代理的 Fork 维护工具。<br>一条命令同步。零依赖。</strong>
   <br><br>
   <a href="README.md">English</a> | <b>简体中文</b>
   <br><br>
@@ -22,15 +17,13 @@
   <br><br>
 </p>
 
-Fork 维护烂透了。
+GitHub 的 "Sync fork" 按钮一碰到你的定制化改动就报废。`git rebase` 是个 6 步仪式。而且这些东西没一个能从 AI 代理调用。
 
-你 fork 了一个项目。你加了功能。上游推了 200 个 commit。现在你的 fork 崩了，补丁散落在各种 merge commit 里，`git rebase` 变成一场血腥屠杀。
+**bingo-light 三个问题一起解决。**
 
-你经历过。我们都经历过。
+你的补丁作为干净的栈叠在上游之上。同步就是 `bingo-light sync`。冲突自动记忆，解决一次永远不用再解决。出了问题 `bingo-light undo` 一秒复原。
 
-**bingo-light 让它变成一条命令。**
-
-你的补丁作为干净的栈叠在上游之上。随时同步。冲突自动记忆和解决。人能用。专为 AI 代理设计。
+每条命令都输出 JSON。内置 MCP 服务器提供 29 个工具，让 AI 代理自主管理你的 Fork — 从初始化到冲突解决，全程无需人工介入。
 
 ---
 
@@ -131,7 +124,13 @@ $ bingo-light conflict-analyze --json
 
 ## 安装
 
-### 交互式安装器（推荐）
+### pip（推荐）
+
+```bash
+pip install bingo-light
+```
+
+### 交互式安装器
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/install.sh | bash
@@ -154,14 +153,7 @@ make install       # 安装到 /usr/local/bin
 make completions   # bash/zsh/fish 补全
 ```
 
-### 手动安装
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/bingo-light \
-  -o /usr/local/bin/bingo-light && chmod +x /usr/local/bin/bingo-light
-```
-
-**依赖：** bash 4.0+, git 2.20+, Python 3.8+（仅 MCP 服务器需要）
+**依赖：** Python 3.8+, git 2.20+。无其他依赖。
 
 ## 功能特性
 
@@ -440,20 +432,43 @@ bingo-light 在 `init` 时自动启用 git 的 `rerere`（reuse recorded resolut
 `format-patch` 能导出补丁，但不管理活的补丁栈。quilt 管理补丁，但在 git 体系之外运作。bingo-light 把补丁保持为真正的 git commit，所以你拥有完整的 git 历史、冲突解决能力、rerere 记忆 -- 同时还能以 quilt 兼容格式导出/导入。
 </details>
 
+## 为什么不用...
+
+<details>
+<summary><b>...GitHub 的 "Sync fork" 按钮？</b></summary>
+<br>
+
+它只能做 fast-forward。只要你有任何定制化改动（fork 上有上游没有的 commit），它要么拒绝，要么创建一个 merge commit 把你的改动埋起来。它没有补丁栈的概念，没有冲突记忆，没有给 AI 代理用的 API。
+</details>
+
+<details>
+<summary><b>...手动 <code>git rebase</code>？</b></summary>
+<br>
+
+你可以。需要 6 步：fetch、checkout tracking 分支、pull、checkout patches 分支、rebase、push。你得记住哪个分支是哪个，手动启用 rerere，出了问题还得祈祷 reflog 没搞乱。bingo-light 把这些全包进 `bingo-light sync`，带自动撤销、冲突预测和结构化输出。
+</details>
+
+<details>
+<summary><b>...StGit / quilt / TopGit？</b></summary>
+<br>
+
+StGit（649 stars）管理补丁栈但没有 AI 集成、没有 MCP 服务器、没有 JSON 输出、没有冲突预测。quilt 完全在 git 体系之外运作 — 没有 rerere，没有历史。TopGit 基本已经废弃。它们都不是为 AI 代理时代设计的。
+</details>
+
 ## 与其他方案对比
 
-| | bingo-light | git rebase (手动) | quilt | Stacked Diffs (spr/ghstack) |
-|---|:---:|:---:|:---:|:---:|
-| 命名补丁栈 | **有** | 无 | 有 | 有 |
-| 一键上游同步 | **有** | 无（多步操作） | 无（纯手动） | 部分 |
-| 冲突记忆 (rerere) | **自动** | 需手动启用 | 无 | 无 |
-| 冲突预测 | **有** | 无 | 无 | 无 |
-| AI/MCP 集成 | **29 个工具** | 无 | 无 | 无 |
-| 结构化 JSON 输出 | **所有命令** | 无 | 无 | 部分 |
-| 非交互模式 | **原生支持** | 部分 | 部分 | 有 |
-| 依赖 | bash + git | git | quilt | 语言特定 |
-| 安装方式 | `pip install` | 内置 | 包管理器 | 包管理器 |
-| 撤销同步 | **一条命令** | git reflog | 手动 | 看情况 |
+| | **bingo-light** | GitHub Sync | git rebase | quilt | StGit |
+|---|:---:|:---:|:---:|:---:|:---:|
+| 命名补丁栈 | **有** | 无 | 无 | 有 | 有 |
+| 一键同步 | **有** | 仅按钮 | 无（6 步） | 无 | 无 |
+| 处理定制化改动 | **有** | **不行** | 手动 | 手动 | 手动 |
+| 冲突记忆 (rerere) | **自动** | 无 | 需手动启用 | 无 | 无 |
+| 冲突预测 | **有** | 无 | 无 | 无 | 无 |
+| AI/MCP 集成 | **29 个工具** | 无 | 无 | 无 | 无 |
+| JSON 输出 | **所有命令** | 无 | 无 | 无 | 无 |
+| 非交互模式 | **原生支持** | 无 | 部分 | 部分 | 部分 |
+| 撤销同步 | **一条命令** | 无 | git reflog | 手动 | 手动 |
+| 安装方式 | `pip install` | 内置 | 内置 | 包管理器 | 包管理器 |
 
 ## 项目生态
 
@@ -466,7 +481,7 @@ tui.py               终端面板（curses TUI）
 install.sh           交互式安装器（动画 TUI）
 completions/         Shell 补全（bash/zsh/fish）
 contrib/hooks/       通知 Hook 示例（Slack/Discord/Webhook）
-tests/test.sh        70 个测试
+tests/               测试套件（250 个测试，5 个文件）
 docs/                文档
 ```
 
@@ -477,8 +492,9 @@ docs/                文档
 ```bash
 git clone https://github.com/DanOps-1/bingo-light.git
 cd bingo-light
-make test    # 跑 70 个测试
-make lint    # shellcheck
+make test       # 核心测试
+make test-all   # 全部 250 个测试
+make lint       # Python 语法 + flake8 + shellcheck
 ```
 
 详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
