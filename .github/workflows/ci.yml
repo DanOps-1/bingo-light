@@ -78,6 +78,49 @@ jobs:
           shellcheck --severity=error tests/test.sh tests/test-json.sh tests/test-edge.sh
           shellcheck --severity=error contrib/hooks/*
 
+  sync-check:
+    name: Sync Points Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: VERSION consistency
+        run: |
+          V_CORE=$(python3 -c "import re; print(re.search(r'VERSION\s*=\s*\"(.+?)\"', open('bingo_core.py').read()).group(1))")
+          V_TOML=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          V_MCP=$(python3 -c "import re; print(re.search(r'\"version\":\s*\"(.+?)\"', open('mcp-server.py').read()).group(1))")
+          echo "core=$V_CORE  toml=$V_TOML  mcp=$V_MCP"
+          [ "$V_CORE" = "$V_TOML" ] || { echo "::error::VERSION mismatch: bingo_core.py=$V_CORE vs pyproject.toml=$V_TOML"; exit 1; }
+          [ "$V_CORE" = "$V_MCP" ] || { echo "::error::VERSION mismatch: bingo_core.py=$V_CORE vs mcp-server.py=$V_MCP"; exit 1; }
+
+      - name: MCP tool count consistency
+        run: |
+          ACTUAL=$(python3 -c "import re; print(len(re.findall(r'\"name\":\s*\"bingo_', open('mcp-server.py').read())))")
+          echo "Actual MCP tools: $ACTUAL"
+          for f in README.md README.zh-CN.md; do
+            if ! grep -q "MCP.*${ACTUAL}.*tool" "$f" && ! grep -q "${ACTUAL}_tools" "$f" && ! grep -q "${ACTUAL} 个工具" "$f"; then
+              echo "::error::$f does not mention $ACTUAL tools"
+              exit 1
+            fi
+          done
+
+      - name: README.zh-CN.md structure sync
+        run: |
+          extract_sections() { grep -n '^## ' "$1" | sed 's/:.*//' | while read n; do sed -n "${n}p" "$1"; done; }
+          EN_COUNT=$(grep -c '^## ' README.md)
+          ZH_COUNT=$(grep -c '^## ' README.zh-CN.md)
+          echo "EN sections: $EN_COUNT, ZH sections: $ZH_COUNT"
+          if [ "$EN_COUNT" -ne "$ZH_COUNT" ]; then
+            echo "::warning::README section count mismatch: EN=$EN_COUNT ZH=$ZH_COUNT"
+          fi
+
+      - name: bingo-light ↔ bingo_light_cli.py identity
+        run: |
+          if ! diff -q bingo-light bingo_light_cli.py > /dev/null 2>&1; then
+            echo "::error::bingo-light and bingo_light_cli.py are out of sync. Run: cp bingo-light bingo_light_cli.py"
+            exit 1
+          fi
+
   unit:
     name: Python Unit Tests
     runs-on: ubuntu-latest
