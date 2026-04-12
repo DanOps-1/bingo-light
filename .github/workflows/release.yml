@@ -34,7 +34,7 @@ jobs:
         run: |
           mkdir -p dist
           tar czf dist/bingo-light-${GITHUB_REF#refs/tags/v}.tar.gz \
-            bingo-light bingo_core/ mcp-server.py agent.py tui.py \
+            bingo-light bingo_core/ mcp-server.py contrib/agent.py contrib/tui.py \
             install.sh completions/ LICENSE README.md
 
       - name: Create GitHub Release

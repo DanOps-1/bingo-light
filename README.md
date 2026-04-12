@@ -83,7 +83,7 @@ That's it. Three commands and your fork stays in sync forever.
 - :stethoscope: **Built-in doctor** -- full diagnostic with test rebase to catch problems early.
 - :package: **Export/Import patches** -- share as `.patch` files, quilt-compatible format.
 - :robot: **Auto-sync CI** -- generates a GitHub Actions workflow with conflict alerting.
-- :tv: **TUI dashboard** -- curses-based real-time monitoring via `tui.py`.
+- :tv: **TUI dashboard** -- curses-based real-time monitoring via `contrib/tui.py`.
 - :globe_with_meridians: **Multi-repo workspace** -- manage multiple forks from one place.
 - :bell: **Notification hooks** -- Slack, Discord, webhooks on sync/conflict/test events.
 - :label: **Patch metadata** -- tags, reasons, expiry dates, upstream PR tracking.
@@ -98,7 +98,7 @@ That's it. Three commands and your fork stays in sync forever.
 - :memo: **`BINGO_DESCRIPTION` env var** -- set patch descriptions without stdin.
 - :mag: **`conflict-analyze --json`** -- structured conflict data: file, ours, theirs, resolution hints.
 - :white_check_mark: **`conflict-resolve`** -- write resolved content via MCP, auto-stage, continue rebase. Zero manual intervention.
-- :satellite: **Advisor agent** -- `agent.py` monitors drift, analyzes risk, auto-syncs when safe.
+- :satellite: **Advisor agent** -- `contrib/agent.py` monitors drift, analyzes risk, auto-syncs when safe.
 
 ---
 
@@ -447,14 +447,14 @@ Yes. bingo-light uses standard git operations (fetch, rebase, push). It works wi
 bingo-light          CLI tool (Python 3, zero deps)
 bingo_core/          Core library package (all business logic)
 mcp-server.py        MCP server (zero-dep Python 3, 29 tools, JSON-RPC 2.0)
-agent.py             Advisor agent (monitors drift, auto-syncs when safe)
-tui.py               Terminal dashboard (curses TUI, real-time monitoring)
+contrib/agent.py     Advisor agent (monitors drift, auto-syncs when safe)
+contrib/tui.py       Terminal dashboard (curses TUI, real-time monitoring)
 install.sh           Interactive installer (animated, sets up everything)
 completions/         Shell completions (bash / zsh / fish)
 contrib/hooks/       Notification hook examples (Slack / Discord / Webhook)
 tests/test.sh        Test suite (70 tests)
 docs/                Documentation + demo SVG
-llms.txt             Complete LLM-consumable reference
+docs/llms.txt        Complete LLM-consumable reference
 ```
 
 ---
@@ -464,7 +464,7 @@ llms.txt             Complete LLM-consumable reference
 - [Getting Started](docs/getting-started.md) -- 5-minute quickstart guide
 - [Concepts](docs/concepts.md) -- branch model, patch stack, sync flow
 - [Changelog](CHANGELOG.md) -- version history
-- [Security](SECURITY.md) -- security model and vulnerability reporting
+- [Security](.github/SECURITY.md) -- security model and vulnerability reporting
 
 ## Contributing
 

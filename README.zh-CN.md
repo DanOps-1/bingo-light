@@ -161,7 +161,7 @@ make completions   # bash/zsh/fish 补全
 | **`BINGO_DESCRIPTION`** | 通过环境变量设置补丁描述 |
 | **`conflict-analyze`** | 结构化冲突数据：文件、ours、theirs、提示 |
 | **`conflict-resolve`** | 通过 MCP 写入解决内容，自动暂存，继续 rebase |
-| **Advisor 代理** | `agent.py` 监控漂移、分析风险、安全时自动同步 |
+| **Advisor 代理** | `contrib/agent.py` 监控漂移、分析风险、安全时自动同步 |
 
 ### 给人类用
 
@@ -177,7 +177,7 @@ make completions   # bash/zsh/fish 补全
 | **诊断** | `doctor` 全面诊断 + 测试变基 |
 | **导出/导入** | 补丁导出为 `.patch` 文件（兼容 quilt） |
 | **CI 自动同步** | 生成 GitHub Actions 工作流，冲突时自动告警 |
-| **TUI 面板** | 基于 curses 的实时监控面板（`tui.py`） |
+| **TUI 面板** | 基于 curses 的实时监控面板（`contrib/tui.py`） |
 | **多仓库** | `workspace` 一个地方管理所有 Fork |
 | **Shell 补全** | bash、zsh、fish 全支持 |
 | **通知 Hook** | Discord、Slack、通用 Webhook，同步/冲突/测试事件触发 |
@@ -469,8 +469,8 @@ StGit（649 stars）管理补丁栈但没有 AI 集成、没有 MCP 服务器、
 bingo-light          CLI 入口（Python 3，零依赖）
 bingo_core/          核心库包（全部业务逻辑）
 mcp-server.py        MCP 服务器（零依赖 Python 3，29 个工具）
-agent.py             Advisor 代理（监控 + 分析 + 安全时自动同步）
-tui.py               终端面板（curses TUI）
+contrib/agent.py     Advisor 代理（监控 + 分析 + 安全时自动同步）
+contrib/tui.py       终端面板（curses TUI）
 install.sh           交互式安装器（动画 TUI）
 completions/         Shell 补全（bash/zsh/fish）
 contrib/hooks/       通知 Hook 示例（Slack/Discord/Webhook）

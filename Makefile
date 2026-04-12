@@ -49,4 +49,4 @@ lint: ## Lint Python (syntax + flake8) and Shell (shellcheck)
 	@echo "Running flake8..."
 	@command -v flake8 >/dev/null 2>&1 && flake8 bingo-light bingo_core/ mcp-server.py --max-line-length=120 --ignore=E501,W503,E302,E305 || echo "  flake8 not installed, skipping (pip install flake8)"
 	@echo "Running shellcheck..."
-	@command -v shellcheck >/dev/null 2>&1 && shellcheck --severity=error bingo-light.bash tests/test.sh tests/test-json.sh tests/test-edge.sh || echo "  shellcheck not installed, skipping"
+	@command -v shellcheck >/dev/null 2>&1 && shellcheck --severity=error contrib/legacy/bingo-light.bash tests/test.sh tests/test-json.sh tests/test-edge.sh || echo "  shellcheck not installed, skipping"

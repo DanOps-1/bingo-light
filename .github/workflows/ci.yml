@@ -80,7 +80,7 @@ jobs:
 
       - name: ShellCheck (bash scripts)
         run: |
-          shellcheck --severity=error bingo-light.bash
+          shellcheck --severity=error contrib/legacy/bingo-light.bash
           shellcheck --severity=error tests/test.sh tests/test-json.sh tests/test-edge.sh
           shellcheck --severity=error contrib/hooks/*
 

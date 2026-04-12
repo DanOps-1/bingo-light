@@ -33,11 +33,11 @@ python3 -c "import py_compile; py_compile.compile('mcp-server.py', doraise=True)
 
 **bingo_core/** (Python 3 package) — Core library. Split into `exceptions.py`, `models.py`, `git.py`, `config.py`, `state.py`, `repo.py`, with `__init__.py` re-exporting all public names. All business logic: sync, patches, conflict analysis, workspace, doctor, etc. Config stored in `.bingolight` via `git config --file`. Uses `.bingo/.lock` for concurrency protection.
 
-**mcp-server.py** (Python 3, stdlib only) — Thin MCP wrapper over the CLI. Calls `run_bl()` which spawns `bingo-light --json --yes` as a subprocess. Adds `--json --yes` to ALL commands automatically. Has `try/except` around `handle_tool_call()` to prevent crashes from bad input. Uses Content-Length framed JSON-RPC 2.0 over stdio.
+**mcp-server.py** (Python 3, stdlib only) — MCP server that imports `bingo_core.Repo` directly (no subprocess). Each tool call creates a `Repo(cwd)` and calls the method. Uses newline-delimited JSON-RPC 2.0 over stdio (MCP spec standard), with Content-Length framing as auto-detected fallback.
 
-**agent.py** — Advisor agent. Observe → Analyze → Safe-act or Report. LLM is used for analysis ONLY, never code execution. Can run without API key (graceful degradation).
+**contrib/agent.py** — Advisor agent. Observe → Analyze → Safe-act or Report. LLM is used for analysis ONLY, never code execution. Can run without API key (graceful degradation).
 
-**tui.py** — Curses dashboard. Read-only status viewer with sync/dry-run.
+**contrib/tui.py** — Curses dashboard. Read-only status viewer with sync/dry-run.
 
 ## Critical patterns to follow when editing
 
@@ -88,15 +88,14 @@ python3 -c "import py_compile; py_compile.compile('mcp-server.py', doraise=True)
 1. `bingo_core/repo.py` — add method to `Repo` class, return dict with `ok` key
 2. `bingo-light` — add argparse + dispatch + **dedicated formatter** (not `_format_generic`)
 3. `completions/*.bash`, `.zsh`, `.fish` — add to ALL three completion files
-4. `llms.txt` — add to command reference
+4. `docs/llms.txt` — add to command reference
 5. `README.md` + `README.zh-CN.md` — add to Command Reference
 6. Tests — add to `test.sh` or `test_core.py`
 
 ## When adding a new MCP tool
 
-1. `mcp-server.py` — add to TOOLS array + `handle_tool_call()`
-2. `run_bl()` auto-adds `--json --yes` — don't add them manually
-3. Update MCP tool count in ALL files listed in "Sync points" above
+1. `mcp-server.py` — add to TOOLS array + `handle_tool_call()` (direct Repo method call)
+2. Update MCP tool count in ALL files listed in "Sync points" above
 4. `tests/test-mcp.py` — add smoke test
 
 ## For AI agents: prefer MCP or --json

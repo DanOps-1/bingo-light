@@ -33,8 +33,8 @@ Open an issue using the **Bug Report** template. Include:
 bingo-light          # Python CLI (entry point)
 bingo_core/          # Core library package (all business logic)
 mcp-server.py        # MCP server (zero-dep Python 3, 29 tools)
-agent.py             # Advisor agent
-tui.py               # Terminal dashboard
+contrib/agent.py     # Advisor agent
+contrib/tui.py       # Terminal dashboard
 install.sh           # Interactive installer
 tests/               # Test suites (250 tests across 5 files)
 completions/         # bash/zsh/fish tab completion
