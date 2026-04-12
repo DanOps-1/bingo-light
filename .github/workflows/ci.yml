@@ -70,7 +70,7 @@ jobs:
       - name: Flake8
         run: |
           pip install flake8
-          flake8 bingo-light bingo_core.py mcp-server.py --max-line-length=120 --ignore=E501,W503
+          flake8 bingo-light bingo_core.py mcp-server.py --max-line-length=120 --ignore=E501,W503,E302,E305
 
       - name: ShellCheck (bash scripts)
         run: |

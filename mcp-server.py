@@ -472,6 +472,7 @@ TOOLS = [
 
 # ─── Command Mapping ──────────────────────────────────────────────────────────
 
+
 def run_bl(args: list[str], cwd: str, input_text: str = "", env_extra: dict = None) -> dict:
     """Run bingo-light CLI and return structured result."""
     env = os.environ.copy()
@@ -687,6 +688,7 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
 # ─── MCP JSON-RPC Protocol ───────────────────────────────────────────────────
 
 _PARSE_ERROR = object()  # Sentinel: bad message, but not EOF
+
 
 def read_message() -> dict | None:
     """Read a JSON-RPC message from stdin (MCP stdio transport).

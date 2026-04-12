@@ -18,7 +18,7 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
-from bingo_core import VERSION, BingoError, Repo
+from bingo_core import VERSION, BingoError, Repo  # noqa: E402
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 
@@ -146,8 +146,8 @@ def _format_sync(result: dict) -> str:
         lines = [f"{_c(RED, 'x')} Sync conflict! Rebase paused."]
         for f in files:
             lines.append(f"  {_c(YELLOW, '~')} {f}")
-        lines.append(f"\n  Resolve conflicts, then: git add <file> && git rebase --continue")
-        lines.append(f"  Or abort: git rebase --abort")
+        lines.append("\n  Resolve conflicts, then: git add <file> && git rebase --continue")
+        lines.append("  Or abort: git rebase --abort")
         return "\n".join(lines)
     patches = result.get("patches_rebased", result.get("patches", 0))
     return f"{_c(GREEN, 'OK')} Sync complete! {patches} patch(es) rebased cleanly."

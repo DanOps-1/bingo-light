@@ -16,10 +16,9 @@ import re
 import shlex
 import subprocess
 import tempfile
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -1382,7 +1381,7 @@ class Repo:
 
         Returns {"ok": True, "syncs": [...]}
         """
-        c = self._load()
+        self._load()  # validate repo is initialized
         data = self.state.get_sync_history()
         data["ok"] = True
         return data
@@ -2574,7 +2573,7 @@ class Repo:
 
         Returns {"ok": True/False, "test": "pass"/"fail", "command": "..."}
         """
-        c = self._load()
+        self._load()  # validate repo is initialized
         test_cmd = self.config.get("test.command")
         if not test_cmd:
             raise BingoError(

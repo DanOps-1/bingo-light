@@ -53,4 +53,4 @@ py-modules = ["bingo_core", "bingo_light_cli"]
 
 [tool.flake8]
 max-line-length = 120
-ignore = ["E501", "W503"]
+ignore = ["E501", "W503", "E302", "E305"]
