@@ -1,0 +1,2822 @@
+#!/usr/bin/env bash
+# bingo-light — AI-native fork maintenance tool.
+# https://github.com/DanOps-1/bingo-light
+#
+# Manages customizations as a clean patch stack on top of upstream,
+# designed for AI agents and LLM tool-use via MCP, JSON output, and non-interactive mode.
+#
+# License: MIT
+
+set -euo pipefail
+
+VERSION="1.2.0"
+CONFIG_FILE=".bingolight"
+PATCH_PREFIX="[bl]"
+MAX_PATCHES=100
+JSON_MODE=false
+YES_MODE=false
+
+# ─── Global Flags ─────────────────────────────────────────────────────────────
+# Parse global flags before command dispatch (--json, --yes/-y)
+_ARGS=()
+for _arg in "$@"; do
+    case "$_arg" in
+        --json)  JSON_MODE=true ;;
+        --yes|-y) YES_MODE=true ;;
+        *)       _ARGS+=("$_arg") ;;
+    esac
+done
+set -- "${_ARGS[@]+"${_ARGS[@]}"}"
+
+# Auto-enable non-interactive mode when stdin is not a terminal (AI agent calling via pipe/MCP)
+if [[ ! -t 0 ]]; then
+    YES_MODE=true
+fi
+
+# ─── Colors & Output ──────────────────────────────────────────────────────────
+
+if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]] && [[ "$JSON_MODE" == false ]]; then
+    RED='\033[0;31m'    GREEN='\033[0;32m'  YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'   MAGENTA='\033[0;35m' CYAN='\033[0;36m'
+    BOLD='\033[1m'      DIM='\033[2m'       RESET='\033[0m'
+else
+    RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' CYAN='' BOLD='' DIM='' RESET=''
+fi
+
+info()    { [[ "$JSON_MODE" == true ]] && return; echo -e "${BLUE}>${RESET} $*"; }
+success() { [[ "$JSON_MODE" == true ]] && return; echo -e "${GREEN}OK${RESET} $*"; }
+warn()    { [[ "$JSON_MODE" == true ]] && return; echo -e "${YELLOW}!${RESET} $*"; }
+error()   { [[ "$JSON_MODE" == true ]] && return; echo -e "${RED}x${RESET} $*" >&2; }
+fatal()   { if [[ "$JSON_MODE" == true ]]; then json_out '{"ok":false,"error":"'"$(echo "$*" | json_escape)"'"}'; else error "$@"; fi; exit 1; }
+header()  { [[ "$JSON_MODE" == true ]] && return; echo -e "\n${BOLD}$*${RESET}"; }
+dim()     { [[ "$JSON_MODE" == true ]] && return; echo -e "${DIM}$*${RESET}"; }
+
+# ─── JSON Helpers ─────────────────────────────────────────────────────────────
+
+json_escape() {
+    # Escape special characters for JSON string values
+    # Uses awk (not sed) to avoid GNU sed N-at-EOF bug on single-line input
+    awk 'BEGIN{ORS=""} {
+        gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); gsub(/\t/,"\\t"); gsub(/\r/,"\\r")
+        # Escape remaining control chars (0x00-0x1f except \t=9, \n=10, \r=13)
+        for(i=0;i<32;i++) {
+            if(i==9||i==10||i==13) continue
+            c=sprintf("%c",i)
+            if(index($0,c)) gsub(c, sprintf("\\u%04x",i))
+        }
+        if(NR>1) printf "\\n"
+        printf "%s",$0
+    }'
+}
+json_out()    { printf '%s\n' "$1"; }
+
+# Prompt helper: auto-answers "y" in non-interactive/YES mode
+confirm() {
+    local prompt="${1:-Proceed?}" default="${2:-y}"
+    if [[ "$YES_MODE" == true ]]; then
+        return 0
+    fi
+    echo -n "  $prompt "
+    read -r answer
+    if [[ "$default" == "y" ]]; then
+        [[ ! "$answer" =~ ^[Nn] ]]
+    else
+        [[ "$answer" =~ ^[Yy] ]]
+    fi
+}
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+ensure_git_repo() {
+    git rev-parse --is-inside-work-tree &>/dev/null || fatal "Not a git repository. Run this inside a git repo."
+    # Auto-unshallow if shallow clone (CI environments)
+    if git rev-parse --is-shallow-repository 2>/dev/null | grep -q true; then
+        info "Shallow clone detected, unshallowing..."
+        git fetch --unshallow 2>/dev/null || true
+    fi
+}
+
+# Run hooks: .bingo/hooks/<event> with JSON data on stdin
+run_hooks() {
+    local event="$1"
+    local data="${2:-}"
+    [[ -z "$data" ]] && data='{}'
+    local hook=".bingo/hooks/$event"
+    if [[ -x "$hook" ]]; then
+        echo "$data" | "$hook" 2>/dev/null || true
+    fi
+}
+
+ensure_initialized() {
+    ensure_git_repo
+    [[ -f "$CONFIG_FILE" ]] || fatal "bingo-light not initialized. Run: ${BOLD}bingo-light init <upstream-url>${RESET}"
+}
+
+load_config() {
+    ensure_initialized
+    UPSTREAM_URL=$(git config --file "$CONFIG_FILE" bingolight.upstream-url 2>/dev/null || echo "")
+    UPSTREAM_BRANCH=$(git config --file "$CONFIG_FILE" bingolight.upstream-branch 2>/dev/null || echo "main")
+    PATCHES_BRANCH=$(git config --file "$CONFIG_FILE" bingolight.patches-branch 2>/dev/null || echo "bingo-patches")
+    TRACKING_BRANCH=$(git config --file "$CONFIG_FILE" bingolight.tracking-branch 2>/dev/null || echo "upstream-tracking")
+}
+
+save_config() {
+    git config --file "$CONFIG_FILE" bingolight.upstream-url "$UPSTREAM_URL"
+    git config --file "$CONFIG_FILE" bingolight.upstream-branch "$UPSTREAM_BRANCH"
+    git config --file "$CONFIG_FILE" bingolight.patches-branch "$PATCHES_BRANCH"
+    git config --file "$CONFIG_FILE" bingolight.tracking-branch "$TRACKING_BRANCH"
+}
+
+current_branch() {
+    git branch --show-current
+}
+
+ensure_clean_tree() {
+    if ! git diff --quiet HEAD 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+        fatal "Working tree is dirty. Commit or stash your changes first."
+    fi
+}
+
+count_patches() {
+    local base
+    base=$(git merge-base "$TRACKING_BRANCH" "$PATCHES_BRANCH" 2>/dev/null) || { echo 0; return 0; }
+    git rev-list --count "$base..$PATCHES_BRANCH" 2>/dev/null || echo 0
+}
+
+# Get the merge base between tracking and patches branches
+patches_base() {
+    git merge-base "$TRACKING_BRANCH" "$PATCHES_BRANCH" 2>/dev/null
+}
+
+# Auto-fix tracking branch after manual conflict resolution
+# If a sync was rolled back on conflict and user completed rebase manually,
+# tracking branch may be stale. Detect and fix.
+_fix_stale_tracking() {
+    [[ -d .git/rebase-merge || -d .git/rebase-apply ]] && return  # don't touch during active rebase
+    [[ -f .bingo/.undo-active ]] && return  # don't auto-fix after undo (user intentionally rolled back)
+    local tracking_pos upstream_pos
+    tracking_pos=$(git rev-parse "$TRACKING_BRANCH" 2>/dev/null) || return
+    upstream_pos=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null) || return
+    [[ "$tracking_pos" == "$upstream_pos" ]] && return  # already in sync
+
+    # Check if patches have been rebased past tracking (upstream commits exist between tracking and patches).
+    # This detects: user manually completed a rebase after sync conflict, or used git rebase directly.
+    # Count non-[bl] commits in tracking..patches — these are upstream commits that got included.
+    local non_bl_count
+    non_bl_count=$(git log --format="%s" "$TRACKING_BRANCH..$PATCHES_BRANCH" 2>/dev/null | grep -cv "^\[bl\] " || true)
+    if [[ "$non_bl_count" -gt 0 ]]; then
+        # Patches contain upstream commits past tracking — tracking is stale, advance it
+        git branch -f "$TRACKING_BRANCH" "$upstream_pos" &>/dev/null
+    fi
+}
+
+# ─── Command: init ────────────────────────────────────────────────────────────
+
+cmd_init() {
+    local upstream_url="${1:-}"
+    local upstream_branch="${2:-}"
+
+    if [[ -z "$upstream_url" ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            fatal "init: missing <upstream-url>"
+        fi
+        echo -e "${BOLD}Usage:${RESET} bingo-light init <upstream-url> [upstream-branch]"
+        echo ""
+        echo "  Initialize bingo-light in the current git repository."
+        echo ""
+        echo "  upstream-url       URL of the original upstream repository"
+        echo "  upstream-branch    Branch to track (default: auto-detect, fallback: main)"
+        echo ""
+        echo -e "${DIM}Example:${RESET}"
+        echo "  bingo-light init https://github.com/original/project.git"
+        echo "  bingo-light init https://github.com/original/project.git develop"
+        return 1
+    fi
+
+    ensure_git_repo
+
+    # Check if already initialized
+    if [[ -f "$CONFIG_FILE" ]]; then
+        if [[ "$YES_MODE" == true ]]; then
+            # Non-interactive re-init: proceed silently
+            :
+        else
+            warn "bingo-light is already initialized in this repo."
+            confirm "Re-initialize? [y/N]" "n" || return 0
+        fi
+    fi
+
+    header "Initializing bingo-light..."
+
+    # 1. Add upstream remote
+    if git remote get-url upstream &>/dev/null; then
+        info "Updating existing 'upstream' remote..."
+        git remote set-url upstream "$upstream_url"
+    else
+        info "Adding 'upstream' remote..."
+        git remote add upstream "$upstream_url"
+    fi
+
+    # 2. Fetch upstream
+    info "Fetching upstream..."
+    if ! git fetch upstream &>/dev/null; then
+        fatal "Failed to fetch upstream. Check the URL: $upstream_url"
+    fi
+
+    # 3. Auto-detect upstream branch if not specified
+    if [[ -z "$upstream_branch" ]]; then
+        # Try to detect the default branch
+        upstream_branch=$(git remote show upstream 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}' || true)
+        if [[ -z "$upstream_branch" || "$upstream_branch" == "(unknown)" ]]; then
+            # Fallback: check for common branch names
+            for candidate in main master develop; do
+                if git rev-parse --verify "upstream/$candidate" &>/dev/null; then
+                    upstream_branch="$candidate"
+                    break
+                fi
+            done
+        fi
+        upstream_branch="${upstream_branch:-main}"
+        info "Auto-detected upstream branch: ${BOLD}$upstream_branch${RESET}"
+    fi
+
+    # Verify upstream branch exists
+    if ! git rev-parse --verify "upstream/$upstream_branch" &>/dev/null; then
+        local avail
+        avail=$(git branch -r --list 'upstream/*' 2>/dev/null | sed 's|upstream/||;s/^ *//' | tr '\n' ', ' | sed 's/,$//')
+        fatal "Branch 'upstream/$upstream_branch' not found. Available: ${avail:-none}"
+    fi
+
+    # 4. Set config
+    UPSTREAM_URL="$upstream_url"
+    UPSTREAM_BRANCH="$upstream_branch"
+    PATCHES_BRANCH="bingo-patches"
+    TRACKING_BRANCH="upstream-tracking"
+
+    # 5. Enable rerere + diff3 (better conflict resolution)
+    info "Enabling git rerere + diff3 merge style..."
+    git config rerere.enabled true
+    git config rerere.autoupdate true
+    git config merge.conflictstyle diff3
+
+    # 6. Create tracking branch (mirrors upstream exactly)
+    info "Creating tracking branch '${TRACKING_BRANCH}'..."
+    git branch -f "$TRACKING_BRANCH" "upstream/$UPSTREAM_BRANCH" &>/dev/null
+
+    # 7. Create patches branch (where your customizations go)
+    local current
+    current=$(current_branch)
+
+    if git rev-parse --verify "$PATCHES_BRANCH" &>/dev/null; then
+        warn "Patches branch '${PATCHES_BRANCH}' already exists, keeping it."
+    else
+        # If current branch has commits ahead of upstream, adopt them as patches
+        local ahead=0
+        local merge_base
+        if merge_base=$(git merge-base "upstream/$UPSTREAM_BRANCH" HEAD 2>/dev/null); then
+            ahead=$(git rev-list --count "$merge_base..HEAD" 2>/dev/null || echo 0)
+        fi
+
+        if [[ "$ahead" -gt 0 ]]; then
+            info "Found ${BOLD}${ahead}${RESET} commits ahead of upstream on current branch."
+            if confirm "Adopt these as your patch stack? [Y/n]" "y"; then
+                git branch "$PATCHES_BRANCH" HEAD
+                info "Adopted current commits as patches."
+            else
+                git branch "$PATCHES_BRANCH" "$TRACKING_BRANCH"
+            fi
+        else
+            git branch "$PATCHES_BRANCH" "$TRACKING_BRANCH"
+        fi
+    fi
+
+    # 8. Save config
+    save_config
+
+    # 8b. Exclude config from git tracking (prevents it leaking into patches)
+    # Uses .git/info/exclude instead of .gitignore — no commit needed, no noise
+    if ! grep -qF '.bingolight' .git/info/exclude 2>/dev/null; then
+        echo ".bingolight" >> .git/info/exclude
+    fi
+
+    # 9. Switch to patches branch
+    if [[ "$(current_branch)" != "$PATCHES_BRANCH" ]]; then
+        info "Switching to patches branch '${PATCHES_BRANCH}'..."
+        git checkout "$PATCHES_BRANCH" &>/dev/null || true
+    fi
+
+    if [[ "$JSON_MODE" == true ]]; then
+        json_out '{"ok":true,"upstream":"'"$(echo "$upstream_url" | json_escape)"'","branch":"'"$(echo "$upstream_branch" | json_escape)"'","tracking":"'"$TRACKING_BRANCH"'","patches":"'"$PATCHES_BRANCH"'"}'
+    else
+        echo ""
+        success "bingo-light initialized!"
+        echo ""
+        echo -e "  ${DIM}Upstream :${RESET} $UPSTREAM_URL ($UPSTREAM_BRANCH)"
+        echo -e "  ${DIM}Tracking :${RESET} $TRACKING_BRANCH (mirrors upstream, don't touch)"
+        echo -e "  ${DIM}Patches  :${RESET} $PATCHES_BRANCH (your customizations go here)"
+        echo ""
+        echo -e "  ${BOLD}Next steps:${RESET}"
+        echo -e "  1. Make your changes, then: ${CYAN}bingo-light patch new <name>${RESET}"
+        echo -e "  2. To sync with upstream:   ${CYAN}bingo-light sync${RESET}"
+        echo -e "  3. To check health:         ${CYAN}bingo-light status${RESET}"
+    fi
+}
+
+# ─── Command: patch ───────────────────────────────────────────────────────────
+
+cmd_patch() {
+    local subcmd="${1:-}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        new|add|create)  patch_new "$@" ;;
+        list|ls)         patch_list "$@" ;;
+        drop|rm|remove)  patch_drop "$@" ;;
+        edit)            patch_edit "$@" ;;
+        export)          patch_export "$@" ;;
+        import)          patch_import "$@" ;;
+        show)            patch_show "$@" ;;
+        reorder)
+            # Check for --order flag (non-interactive mode)
+            if [[ "${1:-}" == "--order" && -n "${2:-}" ]]; then
+                patch_reorder_noninteractive "$2"
+            else
+                patch_reorder "$@"
+            fi
+            ;;
+        squash)          patch_squash "$@" ;;
+        meta)            cmd_patch_meta "$@" ;;
+        *)
+            if [[ "$JSON_MODE" == true ]]; then
+                fatal "patch: missing subcommand (new, list, show, drop, edit, export, import, reorder, squash, meta)"
+            fi
+            echo -e "${BOLD}Usage:${RESET} bingo-light patch <command>"
+            echo ""
+            echo "Commands:"
+            echo -e "  ${CYAN}new${RESET} <name>          Create a new patch from staged/unstaged changes"
+            echo -e "  ${CYAN}list${RESET}                List all patches in the stack"
+            echo -e "  ${CYAN}show${RESET} <name|index>   Show patch details and diff"
+            echo -e "  ${CYAN}edit${RESET} <name|index>   Amend an existing patch"
+            echo -e "  ${CYAN}drop${RESET} <name|index>   Remove a patch from the stack"
+            echo -e "  ${CYAN}export${RESET} [dir]        Export all patches as .patch files"
+            echo -e "  ${CYAN}import${RESET} <file>       Import a .patch file into the stack"
+            echo -e "  ${CYAN}reorder${RESET}             Interactively reorder patches"
+            echo -e "  ${CYAN}squash${RESET} <idx1> <idx2>  Merge two adjacent patches"
+            echo -e "  ${CYAN}meta${RESET} <name> [key] [value]  Get/set patch metadata"
+            echo ""
+            echo -e "${DIM}Example:${RESET}"
+            echo "  bingo-light patch new add-custom-auth"
+            echo "  bingo-light patch list"
+            echo "  bingo-light patch export ./my-patches/"
+            return 1
+            ;;
+    esac
+}
+
+patch_new() {
+    load_config
+    local name="${1:-}"
+
+    if [[ -z "$name" ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            fatal "patch new: missing <name>"
+        fi
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch new <name>"
+        echo ""
+        echo "  Create a new patch. If you have staged changes, they become the patch."
+        echo "  If nothing is staged, ALL unstaged changes are included."
+        echo ""
+        echo -e "${DIM}Examples:${RESET}"
+        echo "  bingo-light patch new fix-login-bug"
+        echo "  bingo-light patch new add-dark-mode"
+        return 1
+    fi
+
+    # Validate name (alphanumeric, hyphens, underscores)
+    if [[ ${#name} -gt 100 ]]; then
+        fatal "Patch name too long (max 100 characters)."
+    fi
+    if [[ ! "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+        fatal "Invalid patch name. Use letters, numbers, hyphens, underscores. Must start with a letter or number."
+    fi
+
+    # Check for duplicate patch name
+    local base
+    if base=$(patches_base); then
+        if git log --format="%s" "$base..$PATCHES_BRANCH" 2>/dev/null | grep -qF "$PATCH_PREFIX $name:"; then
+            fatal "A patch named '${name}' already exists. Use a different name or drop the existing one."
+        fi
+    fi
+
+    # Ensure we're on the patches branch
+    if [[ "$(current_branch)" != "$PATCHES_BRANCH" ]]; then
+        info "Switching to patches branch '${PATCHES_BRANCH}'..."
+        git checkout "$PATCHES_BRANCH" &>/dev/null
+    fi
+
+    # Check if there are changes to commit
+    local has_staged has_unstaged
+    has_staged=$(git diff --cached --quiet 2>/dev/null && echo "no" || echo "yes")
+    has_unstaged=$(git diff --quiet 2>/dev/null && echo "no" || echo "yes")
+    local has_untracked
+    has_untracked=$(git ls-files --others --exclude-standard | head -1)
+
+    if [[ "$has_staged" == "no" && "$has_unstaged" == "no" && -z "$has_untracked" ]]; then
+        fatal "No changes to create a patch from. Make some changes first!"
+    fi
+
+    # If nothing is staged, stage everything
+    if [[ "$has_staged" == "no" ]]; then
+        if [[ "$has_unstaged" == "yes" || -n "$has_untracked" ]]; then
+            info "No staged changes — staging all modifications and new files..."
+            git add -A
+        fi
+    else
+        info "Using staged changes only. Unstaged changes will remain in the working tree."
+    fi
+
+    # Prompt for description (skip in non-interactive mode)
+    local description=""
+    if [[ -n "${BINGO_DESCRIPTION:-}" ]]; then
+        description="$BINGO_DESCRIPTION"
+    elif [[ "$YES_MODE" == true ]]; then
+        # In non-interactive mode, try reading one line from stdin (pipe)
+        if [[ ! -t 0 ]]; then
+            IFS= read -r description 2>/dev/null || true
+        fi
+        description="${description:-no description}"
+    else
+        echo -n "  Brief description (optional, Enter to skip): "
+        read -r description
+        description="${description:-no description}"
+    fi
+
+    # Build commit message
+    local commit_msg="$PATCH_PREFIX $name: $description"
+
+    # Commit
+    if [[ "$JSON_MODE" == true ]]; then
+        git commit -m "$commit_msg" &>/dev/null
+    else
+        git commit -m "$commit_msg"
+    fi
+    local short_hash
+    short_hash=$(git rev-parse --short HEAD)
+
+    if [[ "$JSON_MODE" == true ]]; then
+        json_out '{"ok":true,"patch":"'"$(echo "$name" | json_escape)"'","hash":"'"$short_hash"'","description":"'"$(echo "$description" | json_escape)"'"}'
+    else
+        echo ""
+        success "Patch '${BOLD}${name}${RESET}' created (${DIM}${short_hash}${RESET})"
+        local total
+        total=$(count_patches)
+        dim "  Patch stack: $total patch(es) total"
+    fi
+}
+
+patch_list() {
+    load_config
+
+    local base
+    base=$(patches_base) || {
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"patches":[],"count":0}'
+        else
+            info "No patches yet. Create one with: ${CYAN}bingo-light patch new <name>${RESET}"
+        fi
+        return 0
+    }
+
+    local commits
+    commits=$(git rev-list --reverse "$base..$PATCHES_BRANCH" 2>/dev/null)
+
+    if [[ -z "$commits" ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"patches":[],"count":0}'
+        else
+            info "No patches yet. Create one with: ${CYAN}bingo-light patch new <name>${RESET}"
+        fi
+        return 0
+    fi
+
+    local verbose="${1:-}"
+    local total
+    total=$(echo "$commits" | wc -l | tr -d ' ')
+
+    # JSON mode — single-pass git log + awk (avoids N subprocess forks per patch)
+    if [[ "$JSON_MODE" == true ]]; then
+        local json_patches
+        json_patches=$(git log --format="PATCH%x09%h%x09%s" --shortstat --numstat --reverse "$base..$PATCHES_BRANCH" 2>/dev/null | awk '
+BEGIN { ORS="" }
+/^PATCH\t/ {
+    if (n>0) { emit() }
+    n++; files=0; stat=""
+    split($0, a, "\t"); hash=a[2]; subj=a[3]
+    name=""
+    if (match(subj, /^\[bl\] [^:]+:/)) { name=substr(subj, 6); sub(/:.*/, "", name) }
+    gsub(/\\/, "\\\\", subj); gsub(/"/, "\\\"", subj); gsub(/\t/, "\\t", subj)
+    gsub(/\\/, "\\\\", name); gsub(/"/, "\\\"", name)
+    next
+}
+/^[0-9]+\t[0-9]+\t/ { files++; next }
+/^ *[0-9]+ file/ { gsub(/^ /, "", $0); stat=$0; gsub(/"/, "\\\"", stat); next }
+/^$/ { next }
+function emit() {
+    if (n==1) printf "["; else printf ","
+    printf "{\"name\":\"%s\",\"hash\":\"%s\",\"subject\":\"%s\",\"files\":%d,\"stat\":\"%s\"}", name, hash, subj, files, stat
+}
+END { if (n>0) emit(); else printf "["; printf "]" }
+')
+        json_out '{"ok":true,"patches":'"$json_patches"',"count":'"$total"'}'
+        return 0
+    fi
+
+    header "Patch Stack (bottom = applied first)"
+    echo ""
+
+    local index=1
+
+    while IFS= read -r hash; do
+        local short_hash subject files_changed insertions deletions stat_summary
+        short_hash=$(git rev-parse --short "$hash")
+        subject=$(git log -1 --format="%s" "$hash")
+
+        # Parse patch name from commit message
+        local patch_name=""
+        if [[ "$subject" =~ ^\[bl\]\ ([^:]+): ]]; then
+            patch_name="${BASH_REMATCH[1]}"
+        fi
+
+        # Get change stats
+        files_changed=$(git diff-tree --no-commit-id -r "$hash" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+        stat_summary=$(git diff-tree --no-commit-id --shortstat "$hash" 2>/dev/null | sed 's/^ //')
+
+        # Color the index
+        printf "  ${CYAN}%2d${RESET} " "$index"
+
+        # Color the patch name
+        if [[ -n "$patch_name" ]]; then
+            echo -e "${BOLD}${patch_name}${RESET} ${DIM}(${short_hash})${RESET}"
+        else
+            echo -e "${subject} ${DIM}(${short_hash})${RESET}"
+        fi
+
+        # Show stats
+        if [[ -n "$stat_summary" ]]; then
+            echo -e "     ${DIM}${stat_summary}${RESET}"
+        fi
+
+        # In verbose mode, show changed files
+        if [[ "$verbose" == "-v" || "$verbose" == "--verbose" ]]; then
+            git diff-tree --no-commit-id -r --name-status "$hash" | while read -r status file; do
+                case "$status" in
+                    A) echo -e "     ${GREEN}+ ${file}${RESET}" ;;
+                    D) echo -e "     ${RED}- ${file}${RESET}" ;;
+                    M) echo -e "     ${YELLOW}~ ${file}${RESET}" ;;
+                    *) echo -e "     ${DIM}${status} ${file}${RESET}" ;;
+                esac
+            done
+        fi
+
+        ((index++))
+    done <<< "$commits"
+
+    echo ""
+    dim "  Total: $total patch(es)"
+    dim "  Use 'bingo-light patch list -v' for file details"
+}
+
+patch_show() {
+    load_config
+    local target="${1:-}"
+
+    if [[ -z "$target" ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            fatal "patch show: missing <name or index>"
+        fi
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch show <name|index>"
+        return 1
+    fi
+
+    local hash
+    hash=$(resolve_patch "$target" 2>/dev/null) || { fatal "Patch '${target}' not found."; }
+
+    if [[ "$JSON_MODE" == true ]]; then
+        local subject short_hash stat diff_content pname diff_len
+        short_hash=$(git rev-parse --short "$hash")
+        subject=$(git log -1 --format="%s" "$hash" | json_escape)
+        pname=""
+        local raw_subj
+        raw_subj=$(git log -1 --format="%s" "$hash")
+        [[ "$raw_subj" =~ ^\[bl\]\ ([^:]+): ]] && pname="${BASH_REMATCH[1]}"
+        stat=$(git diff-tree --no-commit-id --shortstat "$hash" 2>/dev/null | sed 's/^ //' | json_escape)
+        diff_content=$(git diff-tree --no-commit-id -p "$hash" 2>/dev/null | json_escape)
+        diff_len=${#diff_content}
+        if [[ $diff_len -gt 50000 ]]; then
+            local preview="${diff_content:0:2000}"
+            preview="${preview%\\}"
+            local size_kb=$(( diff_len / 1024 ))
+            json_out '{"ok":true,"truncated":true,"patch":{"name":"'"$(echo "$pname" | json_escape)"'","hash":"'"$short_hash"'","subject":"'"$subject"'","stat":"'"$stat"'","preview":"'"$preview"'","full_size":'"$diff_len"',"message":"Diff too large ('"$size_kb"'KB). Showing preview. Use bingo-light patch show without --json for full output."}}'
+        else
+            json_out '{"ok":true,"truncated":false,"patch":{"name":"'"$(echo "$pname" | json_escape)"'","hash":"'"$short_hash"'","subject":"'"$subject"'","stat":"'"$stat"'","diff":"'"$diff_content"'"}}'
+        fi
+        return 0
+    fi
+
+    git show "$hash" --stat --patch
+}
+
+patch_drop() {
+    load_config
+    local target="${1:-}"
+
+    if [[ -z "$target" ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            fatal "patch drop: missing <name or index>"
+        fi
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch drop <name|index>"
+        echo ""
+        echo "  Remove a patch from the stack."
+        echo "  Use 'bingo-light patch list' to see available patches."
+        return 1
+    fi
+
+    ensure_clean_tree
+
+    local hash
+    hash=$(resolve_patch "$target" 2>/dev/null) || { fatal "Patch '${target}' not found."; }
+
+    local subject
+    subject=$(git log -1 --format="%s" "$hash")
+
+    if [[ "$JSON_MODE" != true ]]; then
+        echo -e "  About to drop: ${BOLD}${subject}${RESET}"
+    fi
+    confirm "Are you sure? [y/N]" "n" || { info "Cancelled."; return 0; }
+
+    # Ensure we're on the patches branch
+    [[ "$(current_branch)" == "$PATCHES_BRANCH" ]] || git checkout "$PATCHES_BRANCH" &>/dev/null
+
+    # Use rebase to drop the specific commit
+    local pname=""
+    [[ "$subject" =~ ^\[bl\]\ ([^:]+): ]] && pname="${BASH_REMATCH[1]}"
+
+    if git rebase --onto "${hash}^" "$hash" "$PATCHES_BRANCH" 2>/dev/null; then
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"dropped":"'"$(echo "$pname" | json_escape)"'","hash":"'"$(git rev-parse --short "$hash")"'"}'
+        else
+            success "Patch dropped."
+        fi
+    else
+        git rebase --abort 2>/dev/null || true
+        fatal "Failed to drop patch. There may be dependencies between patches."
+    fi
+}
+
+patch_edit() {
+    load_config
+    local target="${1:-}"
+
+    if [[ -z "$target" ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            fatal "patch edit: missing <name or index>"
+        fi
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch edit <name|index>"
+        echo ""
+        echo "  Stage your changes, then run this to fold them into an existing patch."
+        return 1
+    fi
+
+    local hash
+    hash=$(resolve_patch "$target" 2>/dev/null) || { fatal "Patch '${target}' not found."; }
+
+    local has_staged
+    has_staged=$(git diff --cached --quiet 2>/dev/null && echo "no" || echo "yes")
+
+    if [[ "$has_staged" == "no" ]]; then
+        fatal "No staged changes. Stage your fixes first with 'git add', then run this command."
+    fi
+
+    local subject
+    subject=$(git log -1 --format="%s" "$hash")
+    info "Folding staged changes into: ${BOLD}${subject}${RESET}"
+
+    # Create a fixup commit and auto-squash
+    git commit --fixup="$hash" &>/dev/null
+
+    # Non-interactive rebase with autosquash
+    local base
+    base=$(patches_base)
+    GIT_SEQUENCE_EDITOR=true git rebase --autosquash "$base" &>/dev/null || {
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":false,"error":"Rebase conflict while editing patch"}'
+        else
+            warn "Rebase conflict while editing patch. Resolve conflicts, then:"
+            echo "  git add <files>"
+            echo "  git rebase --continue"
+        fi
+        return 1
+    }
+
+    if [[ "$JSON_MODE" == true ]]; then
+        json_out '{"ok":true,"edited":"'"$(echo "$subject" | json_escape)"'"}'
+    else
+        success "Patch updated."
+    fi
+}
+
+patch_export() {
+    load_config
+    local output_dir="${1:-.bl-patches}"
+
+    local base
+    base=$(patches_base) || {
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"count":0,"patches":[]}'
+        else
+            info "No patches to export."
+        fi
+        return 0
+    }
+
+    local count
+    count=$(git rev-list --count "$base..$PATCHES_BRANCH" 2>/dev/null || echo 0)
+
+    if [[ "$count" -eq 0 ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"count":0,"patches":[]}'
+        else
+            info "No patches to export."
+        fi
+        return 0
+    fi
+
+    mkdir -p "$output_dir"
+
+    info "Exporting $count patch(es) to ${BOLD}${output_dir}/${RESET}..."
+
+    # Generate numbered patch files
+    git format-patch --numbered --output-directory "$output_dir" "$base..$PATCHES_BRANCH" >/dev/null
+
+    # Also create a series file (quilt-compatible)
+    for f in "$output_dir"/*.patch; do basename "$f"; done | sort > "$output_dir/series"
+
+    if [[ "$JSON_MODE" == true ]]; then
+        local files_json="["
+        local first=true
+        for f in "$output_dir"/*.patch; do
+            [[ "$first" == true ]] && first=false || files_json+=","
+            files_json+='"'"$(basename "$f")"'"'
+        done
+        files_json+="]"
+        json_out '{"ok":true,"count":'"$count"',"directory":"'"$(echo "$output_dir" | json_escape)"'","files":'"$files_json"'}'
+        return 0
+    fi
+
+    success "Exported $count patch(es)."
+    echo ""
+    ls -1 "$output_dir"/*.patch | while read -r f; do
+        dim "  $(basename "$f")"
+    done
+}
+
+patch_import() {
+    load_config
+    local patch_file="${1:-}"
+
+    if [[ -z "$patch_file" ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            fatal "patch import: missing <file or dir>"
+        fi
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch import <file.patch>"
+        echo ""
+        echo "  Import a .patch file (or directory of patches) into the stack."
+        return 1
+    fi
+
+    # Ensure we're on patches branch
+    [[ "$(current_branch)" == "$PATCHES_BRANCH" ]] || git checkout "$PATCHES_BRANCH" &>/dev/null
+
+    if [[ -d "$patch_file" ]]; then
+        # Import all patches from directory
+        local series_file="$patch_file/series"
+        if [[ -f "$series_file" ]]; then
+            info "Importing patches in series order..."
+            while IFS= read -r p; do
+                [[ -n "$p" && ! "$p" =~ ^# ]] || continue
+                info "  Applying: $p"
+                if [[ "$JSON_MODE" == true ]]; then
+                    git am "$patch_file/$p" &>/dev/null
+                else
+                    git am "$patch_file/$p"
+                fi || {
+                    if [[ "$JSON_MODE" == true ]]; then
+                        json_out '{"ok":false,"error":"Failed to apply '"$(echo "$p" | json_escape)"'. Run git am --abort to undo, or resolve and git am --continue."}'
+                    else
+                        warn "Failed to apply $p. Run 'git am --abort' to undo, or resolve and 'git am --continue'."
+                    fi
+                    return 1
+                }
+            done < "$series_file"
+        else
+            info "No series file found, importing in alphabetical order..."
+            for p in "$patch_file"/*.patch; do
+                info "  Applying: $(basename "$p")"
+                if [[ "$JSON_MODE" == true ]]; then
+                    git am "$p" &>/dev/null
+                else
+                    git am "$p"
+                fi || {
+                    if [[ "$JSON_MODE" == true ]]; then
+                        json_out '{"ok":false,"error":"Failed to apply '"$(echo "$(basename "$p")" | json_escape)"'. Run git am --abort to undo."}'
+                    else
+                        warn "Failed to apply $(basename "$p"). Run 'git am --abort' to undo."
+                    fi
+                    return 1
+                }
+            done
+        fi
+    else
+        # Import single patch
+        [[ -f "$patch_file" ]] || fatal "File not found: $patch_file"
+        info "Applying: $(basename "$patch_file")"
+        if [[ "$JSON_MODE" == true ]]; then
+            git am "$patch_file" &>/dev/null
+        else
+            git am "$patch_file"
+        fi || {
+            if [[ "$JSON_MODE" == true ]]; then
+                json_out '{"ok":false,"error":"Failed to apply patch. Run git am --abort to undo."}'
+            else
+                warn "Failed to apply patch. Run 'git am --abort' to undo."
+            fi
+            return 1
+        }
+    fi
+
+    local imported_count
+    imported_count=$(count_patches)
+    if [[ "$JSON_MODE" == true ]]; then
+        json_out '{"ok":true,"imported":true,"patch_count":'"$imported_count"'}'
+    else
+        success "Import complete."
+    fi
+}
+
+patch_reorder() {
+    load_config
+    ensure_clean_tree
+
+    local base
+    base=$(patches_base) || {
+        if [[ "$JSON_MODE" == true ]]; then json_out '{"ok":true,"message":"no patches to reorder"}'; else info "No patches to reorder."; fi
+        return 0
+    }
+
+    local count
+    count=$(git rev-list --count "$base..$PATCHES_BRANCH" 2>/dev/null || echo 0)
+    if [[ "$count" -le 1 ]]; then
+        if [[ "$JSON_MODE" == true ]]; then json_out '{"ok":true,"message":"only one patch"}'; else info "Only one patch, nothing to reorder."; fi
+        return 0
+    fi
+
+    if [[ "$YES_MODE" == true ]]; then
+        fatal "Interactive reorder requires a terminal. Use: bingo-light patch reorder --order \"2,1,3\""
+    fi
+
+    info "Opening editor to reorder patches..."
+    info "Reorder the 'pick' lines. Save and close to apply. Delete a line to drop that patch."
+    echo ""
+
+    GIT_SEQUENCE_EDITOR="${EDITOR:-vi}" git rebase -i "$base" 2>/dev/null || {
+        warn "Rebase interrupted. Resolve any conflicts, then 'git rebase --continue'."
+        return 1
+    }
+
+    success "Patches reordered."
+}
+
+_resolve_error() {
+    # Output to stderr so callers using $(resolve_patch) don't capture errors as the hash
+    if [[ "$JSON_MODE" == true ]]; then
+        printf '%s\n' '{"ok":false,"error":"'"$(echo "$*" | json_escape)"'"}' >&2
+    else
+        error "$@"
+    fi
+}
+
+# Resolve a patch by name or index to its commit hash
+resolve_patch() {
+    local target="$1"
+    local base
+    base=$(patches_base) || { _resolve_error "No patches found."; return 1; }
+
+    local commits
+    commits=$(git rev-list --reverse "$base..$PATCHES_BRANCH" 2>/dev/null)
+
+    if [[ -z "$commits" ]]; then
+        _resolve_error "No patches found."
+        return 1
+    fi
+
+    # Try as index first
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+        local hash
+        hash=$(echo "$commits" | sed -n "${target}p")
+        if [[ -n "$hash" ]]; then
+            echo "$hash"
+            return 0
+        fi
+        _resolve_error "Patch index $target out of range."
+        return 1
+    fi
+
+    # Try as name
+    while IFS= read -r hash; do
+        local subject
+        subject=$(git log -1 --format="%s" "$hash")
+        if [[ "$subject" == *"$PATCH_PREFIX $target:"* ]]; then
+            echo "$hash"
+            return 0
+        fi
+    done <<< "$commits"
+
+    # Try as partial match
+    while IFS= read -r hash; do
+        local subject
+        subject=$(git log -1 --format="%s" "$hash")
+        if [[ "$subject" == *"$target"* ]]; then
+            echo "$hash"
+            return 0
+        fi
+    done <<< "$commits"
+
+    _resolve_error "Patch '${target}' not found."
+    return 1
+}
+
+# ─── Command: sync ────────────────────────────────────────────────────────────
+
+cmd_sync() {
+    load_config
+    _fix_stale_tracking
+
+    local dry_run=false
+    local force=false
+    local run_test=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run|-n) dry_run=true ;;
+            --force|-f)   force=true ;;
+            --test|-t)    run_test=true ;;
+            --help|-h)
+                echo -e "${BOLD}Usage:${RESET} bingo-light sync [options]"
+                echo ""
+                echo "Options:"
+                echo "  --dry-run, -n   Preview what would happen without making changes"
+                echo "  --force, -f     Skip confirmation prompt"
+                echo "  --test, -t      Run tests after sync; auto-undo on failure"
+                echo ""
+                return 0
+                ;;
+            *) fatal "Unknown option: $1" ;;
+        esac
+        shift
+    done
+
+    ensure_clean_tree
+
+    header "Syncing with upstream..."
+    [[ "$JSON_MODE" != true ]] && echo ""
+
+    # 1. Fetch upstream
+    info "Fetching upstream ($UPSTREAM_URL)..."
+    git fetch upstream 2>/dev/null || fatal "Failed to fetch upstream."
+
+    # 2. Check how far behind we are
+    local tracking_head upstream_head
+    tracking_head=$(git rev-parse "$TRACKING_BRANCH" 2>/dev/null)
+    upstream_head=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null)
+
+    if [[ "$tracking_head" == "$upstream_head" ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"synced":true,"behind_before":0,"patches_rebased":0,"up_to_date":true}'
+        else
+            success "Already up to date with upstream."
+        fi
+        return 0
+    fi
+
+    local behind
+    behind=$(git rev-list --count "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo 0)
+
+    info "Upstream has ${BOLD}${behind}${RESET} new commit(s)."
+
+    local patch_count
+    patch_count=$(count_patches)
+    info "You have ${BOLD}${patch_count}${RESET} patch(es) to rebase."
+
+    # 3. Dry run: test if rebase would succeed
+    if [[ "$dry_run" == true ]]; then
+        header "Dry run: testing rebase..."
+        [[ "$JSON_MODE" != true ]] && echo ""
+
+        # Create a temporary branch to test
+        trap 'git branch -D "bl-dryrun-$$" &>/dev/null; git branch -D "bl-dryrun-tracking-$$" &>/dev/null' EXIT
+        local tmp_branch="bl-dryrun-$$"
+        git branch "$tmp_branch" "$PATCHES_BRANCH" &>/dev/null
+
+        # Update tracking to test against
+        local tmp_tracking="bl-dryrun-tracking-$$"
+        git branch "$tmp_tracking" "upstream/$UPSTREAM_BRANCH" &>/dev/null
+
+        if git rebase --onto "$tmp_tracking" "$TRACKING_BRANCH" "$tmp_branch" &>/dev/null; then
+            if [[ "$JSON_MODE" == true ]]; then
+                json_out '{"ok":true,"dry_run":true,"clean":true,"behind":'"$behind"',"patches":'"$patch_count"'}'
+            else
+                success "Dry run: rebase would succeed cleanly!"
+            fi
+        else
+            local conflicted
+            conflicted=$(git ls-files --unmerged 2>/dev/null | cut -f2 | sort -u 2>/dev/null || true)
+            if [[ "$JSON_MODE" == true ]]; then
+                local files_json="[]"
+                if [[ -n "$conflicted" ]]; then
+                    files_json="["
+                    local first_f=true
+                    while IFS= read -r f; do
+                        [[ "$first_f" == true ]] && first_f=false || files_json+=","
+                        files_json+='"'"$(echo "$f" | json_escape)"'"'
+                    done <<< "$conflicted"
+                    files_json+="]"
+                fi
+                json_out '{"ok":true,"dry_run":true,"clean":false,"behind":'"$behind"',"patches":'"$patch_count"',"conflicted_files":'"$files_json"'}'
+            else
+                warn "Dry run: rebase would have conflicts."
+                echo ""
+                if [[ -n "$conflicted" ]]; then
+                    echo -e "  ${RED}Conflicted files:${RESET}"
+                    echo "$conflicted" | while read -r f; do echo -e "    ${RED}${f}${RESET}"; done
+                fi
+            fi
+            git rebase --abort 2>/dev/null || true
+        fi
+
+        # Cleanup
+        git checkout "$PATCHES_BRANCH" &>/dev/null || true
+        git branch -D "$tmp_branch" &>/dev/null || true
+        git branch -D "$tmp_tracking" &>/dev/null || true
+        trap - EXIT
+        return 0
+    fi
+
+    # 4. Confirm
+    if [[ "$force" != true && "$JSON_MODE" != true ]]; then
+        echo ""
+        echo -e "  This will rebase your ${BOLD}${patch_count}${RESET} patch(es) onto ${BOLD}${behind}${RESET} new upstream commit(s)."
+        confirm "Proceed? [Y/n]" "y" || { info "Cancelled."; return 0; }
+    fi
+
+    [[ "$JSON_MODE" != true ]] && echo ""
+
+    # 5. Ensure we're on the patches branch
+    [[ "$(current_branch)" == "$PATCHES_BRANCH" ]] || git checkout "$PATCHES_BRANCH" &>/dev/null
+
+    # 6. Save current state for rollback (persist for undo)
+    local saved_head
+    saved_head=$(git rev-parse HEAD)
+    local saved_tracking
+    saved_tracking=$(git rev-parse "$TRACKING_BRANCH" 2>/dev/null)
+
+    # Persist for undo command (don't rely on reflog — it expires)
+    mkdir -p .bingo
+    echo "$saved_head" > .bingo/.undo-head
+    echo "$saved_tracking" > .bingo/.undo-tracking
+    rm -f .bingo/.undo-active  # Clear undo marker — new sync starts a new cycle
+
+    # 7. Update tracking branch
+    info "Updating tracking branch..."
+    git branch -f "$TRACKING_BRANCH" "upstream/$UPSTREAM_BRANCH" &>/dev/null
+
+    # 8. Rebase patches
+    info "Rebasing patches onto new upstream..."
+    [[ "$JSON_MODE" != true ]] && echo ""
+
+    local rebase_output
+    if rebase_output=$(git rebase --onto "$TRACKING_BRANCH" "$saved_tracking" "$PATCHES_BRANCH" 2>&1); then
+        [[ "$JSON_MODE" != true ]] && [[ -n "$rebase_output" ]] && echo "$rebase_output"
+        # Record sync history + run hooks
+        record_sync_history "$(pwd)" "$behind" "$(git rev-parse --short "$saved_tracking" 2>/dev/null)"
+        run_hooks "on-sync-success" '{"behind_before":'"$behind"',"patches_rebased":'"$patch_count"'}'
+
+        # Run tests after sync if --test flag
+        if [[ "$run_test" == true ]]; then
+            info "Running post-sync tests..."
+            if ! cmd_test 2>/dev/null; then
+                warn "Tests failed after sync! Auto-undoing..."
+                git branch -f "$PATCHES_BRANCH" "$saved_head" 2>/dev/null
+                [[ "$(current_branch)" == "$PATCHES_BRANCH" ]] && git reset --hard "$saved_head" 2>/dev/null
+                git branch -f "$TRACKING_BRANCH" "$saved_tracking" 2>/dev/null
+                run_hooks "on-test-fail" '{"behind_before":'"$behind"'}'
+                if [[ "$JSON_MODE" == true ]]; then
+                    json_out '{"ok":false,"synced":false,"test":"fail","auto_undone":true}'
+                else
+                    error "Sync undone due to test failure."
+                fi
+                return 1
+            fi
+        fi
+
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"synced":true,"behind_before":'"$behind"',"patches_rebased":'"$patch_count"'}'
+        else
+            echo ""
+            success "Sync complete! All ${patch_count} patch(es) rebased cleanly."
+            local new_behind
+            new_behind=$(git rev-list --count "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo 0)
+            if [[ "$new_behind" -eq 0 ]]; then
+                dim "  You are now up to date with upstream."
+            fi
+        fi
+    else
+        [[ "$JSON_MODE" != true ]] && [[ -n "$rebase_output" ]] && echo "$rebase_output"
+        # Check if rerere auto-resolved all conflicts
+        local unresolved
+        unresolved=$(git ls-files --unmerged 2>/dev/null | cut -f2 | sort -u 2>/dev/null || true)
+        if [[ -z "$unresolved" ]]; then
+            # rerere resolved everything! Auto-continue the rebase.
+            info "rerere auto-resolved conflicts, continuing rebase..."
+            # Loop: continue rebase until done or a real conflict appears
+            local rerere_ok=true
+            local rerere_iter=0
+            while [[ -d .git/rebase-merge || -d .git/rebase-apply ]]; do
+                rerere_iter=$((rerere_iter + 1))
+                if [[ $rerere_iter -gt 50 ]]; then
+                    git rebase --abort &>/dev/null || true
+                    fatal "rerere auto-continue exceeded 50 iterations, aborting."
+                fi
+                if GIT_EDITOR=true git rebase --continue &>/dev/null; then
+                    break  # rebase done
+                fi
+                # Check again if rerere resolved the new conflict
+                unresolved=$(git ls-files --unmerged 2>/dev/null | cut -f2 | sort -u 2>/dev/null || true)
+                if [[ -n "$unresolved" ]]; then
+                    rerere_ok=false
+                    break  # real unresolved conflict
+                fi
+            done
+
+            if [[ "$rerere_ok" == true ]]; then
+                record_sync_history "$(pwd)" "$behind" "$(git rev-parse --short "$saved_tracking" 2>/dev/null)"
+                run_hooks "on-sync-success" '{"behind_before":'"$behind"',"patches_rebased":'"$patch_count"',"rerere_resolved":true}'
+                if [[ "$JSON_MODE" == true ]]; then
+                    json_out '{"ok":true,"synced":true,"behind_before":'"$behind"',"patches_rebased":'"$patch_count"',"rerere_resolved":true}'
+                else
+                    echo ""
+                    success "Sync complete! rerere auto-resolved conflicts."
+                    dim "  You are now up to date with upstream."
+                fi
+                return 0
+            fi
+        fi
+
+        # Rollback tracking branch so merge-base calculations stay correct
+        # (user can still resolve the rebase, tracking is restored on next sync)
+        git branch -f "$TRACKING_BRANCH" "$saved_tracking" &>/dev/null || true
+
+        run_hooks "on-conflict" '{"patch_count":'"$patch_count"'}'
+        if [[ "$JSON_MODE" == true ]]; then
+            local conflicted_files_raw
+            conflicted_files_raw=$(git ls-files --unmerged 2>/dev/null | cut -f2 | sort -u 2>/dev/null || true)
+            local cf_json="["
+            local cf_first=true
+            while IFS= read -r cf; do
+                [[ -z "$cf" ]] && continue
+                [[ "$cf_first" == true ]] && cf_first=false || cf_json+=","
+                cf_json+='"'"$(echo "$cf" | json_escape)"'"'
+            done <<< "$conflicted_files_raw"
+            cf_json+="]"
+            json_out '{"ok":false,"synced":false,"conflict":true,"conflicted_files":'"$cf_json"',"abort_cmd":"git rebase --abort","next":"Run bingo-light conflict-analyze --json to see conflict details, then resolve each file","tracking_restore":"git branch -f '"$TRACKING_BRANCH"' '"$saved_tracking"'"}'
+        else
+            echo ""
+            warn "Rebase conflict detected!"
+            echo ""
+            echo -e "  ${BOLD}What to do:${RESET}"
+            echo ""
+            echo "  1. Fix the conflicts in the listed files"
+            echo "  2. Stage the fixes:  git add <files>"
+            echo "  3. Continue rebase:  git rebase --continue"
+            echo "  4. Repeat until done"
+            echo ""
+            echo -e "  ${BOLD}Or to abort:${RESET}"
+            echo "  git rebase --abort"
+            echo ""
+            echo -e "  ${DIM}Tip: git rerere is enabled, so resolved conflicts are remembered"
+            echo -e "  for next time. You only solve each conflict once!${RESET}"
+        fi
+        return 1
+    fi
+}
+
+# ─── Command: smart-sync (AI-native: one call does the entire sync+resolve cycle) ──
+
+cmd_smart_sync() {
+    load_config
+    _fix_stale_tracking
+    ensure_clean_tree
+
+    # Circuit breaker: if last 3 syncs failed on the same upstream commit, stop trying
+    local upstream_target
+    upstream_target=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+    if [[ -f .bingo/.sync-failures ]]; then
+        local fail_count fail_target
+        fail_target=$(head -1 .bingo/.sync-failures)
+        fail_count=$(tail -1 .bingo/.sync-failures)
+        if [[ "$fail_target" == "$upstream_target" && "${fail_count:-0}" -ge 3 ]]; then
+            fatal "Circuit breaker: 3 consecutive sync failures on the same upstream commit. Resolve conflicts manually or wait for upstream to advance."
+        fi
+    fi
+
+    # Step 1: Fetch and check
+    git fetch upstream 2>/dev/null || fatal "Failed to fetch upstream."
+    upstream_target=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+    local tracking_head upstream_head
+    tracking_head=$(git rev-parse "$TRACKING_BRANCH" 2>/dev/null)
+    upstream_head=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null)
+
+    if [[ "$tracking_head" == "$upstream_head" ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"action":"none","message":"Already up to date.","behind":0,"patches":'"$(count_patches)"'}'
+        else
+            success "Already up to date with upstream."
+        fi
+        return 0
+    fi
+
+    local behind
+    behind=$(git rev-list --count "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo 0)
+    local patch_count
+    patch_count=$(count_patches)
+
+    info "Smart sync: $behind commits behind, $patch_count patches."
+
+    # Step 2: Save state for rollback
+    local saved_head saved_tracking
+    saved_head=$(git rev-parse HEAD)
+    saved_tracking=$(git rev-parse "$TRACKING_BRANCH" 2>/dev/null)
+    mkdir -p .bingo
+    echo "$saved_head" > .bingo/.undo-head
+    echo "$saved_tracking" > .bingo/.undo-tracking
+    rm -f .bingo/.undo-active
+
+    # Step 3: Update tracking
+    git branch -f "$TRACKING_BRANCH" "upstream/$UPSTREAM_BRANCH" &>/dev/null
+    [[ "$(current_branch)" == "$PATCHES_BRANCH" ]] || git checkout "$PATCHES_BRANCH" &>/dev/null
+
+    # Step 4: Attempt rebase
+    local rebase_output conflicts_resolved=0 max_resolve=20 resolve_iter=0
+    if rebase_output=$(git rebase --onto "$TRACKING_BRANCH" "$saved_tracking" "$PATCHES_BRANCH" 2>&1); then
+        # Clean rebase — done!
+        rm -f .bingo/.sync-failures  # Reset circuit breaker on success
+        [[ "$JSON_MODE" != true ]] && echo "$rebase_output"
+        record_sync_history "$(pwd)" "$behind" "$(git rev-parse --short "$saved_tracking" 2>/dev/null)" 2>/dev/null || true
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"action":"synced","behind_before":'"$behind"',"patches_rebased":'"$patch_count"',"conflicts_resolved":0}'
+        else
+            success "Smart sync complete! $patch_count patch(es) rebased cleanly."
+        fi
+        return 0
+    fi
+
+    # Step 5: Rebase failed — enter conflict resolution loop
+    [[ "$JSON_MODE" != true ]] && echo "$rebase_output"
+    info "Conflicts detected. Attempting auto-resolution..."
+
+    local conflict_log="["
+    local cf_first=true
+
+    while [[ -d .git/rebase-merge || -d .git/rebase-apply ]]; do
+        resolve_iter=$((resolve_iter + 1))
+        if [[ $resolve_iter -gt $max_resolve ]]; then
+            git rebase --abort &>/dev/null || true
+            git branch -f "$TRACKING_BRANCH" "$saved_tracking" &>/dev/null || true
+            fatal "Smart sync: exceeded $max_resolve resolution attempts. Aborting."
+        fi
+
+        # Check for unresolved conflicts
+        local unresolved
+        unresolved=$(git ls-files --unmerged 2>/dev/null | cut -f2 | sort -u 2>/dev/null || true)
+
+        if [[ -z "$unresolved" ]]; then
+            # rerere resolved everything in this step
+            if GIT_EDITOR=true git rebase --continue &>/dev/null; then
+                conflicts_resolved=$((conflicts_resolved + 1))
+                continue  # May have more patches to apply
+            fi
+            # Continue failed — check for new conflicts
+            unresolved=$(git ls-files --unmerged 2>/dev/null | cut -f2 | sort -u 2>/dev/null || true)
+            [[ -z "$unresolved" ]] && continue
+        fi
+
+        # Real unresolved conflicts — report what we have and stop
+        git branch -f "$TRACKING_BRANCH" "$saved_tracking" &>/dev/null || true
+
+        # Circuit breaker: increment failure count
+        local prev_count=0
+        if [[ -f .bingo/.sync-failures ]]; then
+            local prev_target
+            prev_target=$(head -1 .bingo/.sync-failures)
+            if [[ "$prev_target" == "$upstream_target" ]]; then
+                prev_count=$(tail -1 .bingo/.sync-failures)
+            fi
+        fi
+        printf '%s\n%d' "$upstream_target" "$((prev_count + 1))" > .bingo/.sync-failures
+
+        if [[ "$JSON_MODE" == true ]]; then
+            # Build conflict details
+            local cf_json="["
+            local first_cf=true
+            while IFS= read -r file; do
+                [[ -z "$file" ]] && continue
+                [[ "$first_cf" == true ]] && first_cf=false || cf_json+=","
+                local ours theirs conflict_count merge_hint
+                ours=$(sed -n '/^<<<<<<</,/^=======/{ /^<<<<<<</d; /^=======/d; p; }' "$file" 2>/dev/null | sed '/^|||||||/,$d' | json_escape)
+                theirs=$(sed -n '/^=======/,/^>>>>>>>/{ /^=======/d; /^>>>>>>>/d; p; }' "$file" 2>/dev/null | json_escape)
+                conflict_count=$(grep -c '^<<<<<<< ' "$file" 2>/dev/null || echo 0)
+                merge_hint="Merge both changes. Keep ours (upstream) and theirs (your patch)."
+                cf_json+='{"file":"'"$(echo "$file" | json_escape)"'","ours":"'"$ours"'","theirs":"'"$theirs"'","conflict_count":'"$conflict_count"',"merge_hint":"'"$(echo "$merge_hint" | json_escape)"'"}'
+            done <<< "$unresolved"
+            cf_json+="]"
+
+            local current_patch_info=""
+            if [[ -f .git/rebase-merge/message ]]; then
+                current_patch_info=$(head -1 .git/rebase-merge/message 2>/dev/null | json_escape)
+            fi
+            json_out '{"ok":false,"action":"needs_human","behind_before":'"$behind"',"conflicts_auto_resolved":'"$conflicts_resolved"',"current_patch":"'"$current_patch_info"'","remaining_conflicts":'"$cf_json"',"resolution_steps":["1. Read ours/theirs for each conflict","2. Write merged content to the file","3. git add <file>","4. git rebase --continue","5. Run bingo-light smart-sync again to continue"],"abort_cmd":"git rebase --abort","next":"For each conflict: read merge_hint, write merged file, git add, git rebase --continue"}'
+        else
+            warn "Smart sync: $conflicts_resolved conflict(s) auto-resolved, but manual resolution needed."
+            echo ""
+            echo "  Conflicted files:"
+            echo "$unresolved" | while read -r f; do echo -e "    ${RED}${f}${RESET}"; done
+            echo ""
+            echo "  Resolve, then: git add <files> && git rebase --continue"
+            echo "  Or abort:      git rebase --abort"
+        fi
+        return 1
+    done
+
+    # If we get here, all conflicts were auto-resolved by rerere
+    rm -f .bingo/.sync-failures  # Reset circuit breaker on success
+    record_sync_history "$(pwd)" "$behind" "$(git rev-parse --short "$saved_tracking" 2>/dev/null)" 2>/dev/null || true
+    if [[ "$JSON_MODE" == true ]]; then
+        json_out '{"ok":true,"action":"synced_with_rerere","behind_before":'"$behind"',"patches_rebased":'"$patch_count"',"conflicts_auto_resolved":'"$conflicts_resolved"'}'
+    else
+        success "Smart sync complete! $conflicts_resolved conflict(s) auto-resolved by rerere."
+    fi
+}
+
+# ─── Command: status ──────────────────────────────────────────────────────────
+
+cmd_status() {
+    # In JSON mode, delegate to structured output
+    if [[ "$JSON_MODE" == true ]]; then
+        load_config
+        _fix_stale_tracking
+        cmd_json_status
+        return
+    fi
+
+    load_config
+    _fix_stale_tracking
+
+    header "bingo-light status"
+    echo ""
+
+    # Upstream info
+    echo -e "  ${BOLD}Upstream:${RESET}  $UPSTREAM_URL"
+    echo -e "  ${BOLD}Branch:${RESET}   $UPSTREAM_BRANCH"
+    echo -e "  ${BOLD}Current:${RESET}  $(current_branch)"
+    echo ""
+
+    # Fetch upstream (silently, just for freshness)
+    git fetch upstream 2>/dev/null || warn "Could not fetch upstream (offline?)"
+
+    # Upstream drift
+    local tracking_head upstream_head
+    tracking_head=$(git rev-parse "$TRACKING_BRANCH" 2>/dev/null)
+    upstream_head=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null)
+
+    if [[ "$tracking_head" == "$upstream_head" ]]; then
+        echo -e "  ${GREEN}Up to date with upstream${RESET}"
+    else
+        local behind
+        behind=$(git rev-list --count "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "?")
+        echo -e "  ${YELLOW}${behind} commit(s) behind upstream${RESET}"
+
+        # Show time since last sync
+        local last_sync_date
+        last_sync_date=$(git log -1 --format="%cr" "$TRACKING_BRANCH" 2>/dev/null)
+        dim "  Last synced: $last_sync_date"
+    fi
+    echo ""
+
+    # Patch stack
+    local base patch_count
+    if base=$(patches_base); then
+        patch_count=$(git rev-list --count "$base..$PATCHES_BRANCH" 2>/dev/null || echo 0)
+    else
+        patch_count=0
+    fi
+
+    echo -e "  ${BOLD}Patches:${RESET} $patch_count"
+    echo ""
+
+    if [[ "$patch_count" -gt 0 ]]; then
+        local index=1
+        local commits
+        commits=$(git rev-list --reverse "$base..$PATCHES_BRANCH")
+
+        while IFS= read -r hash; do
+            local short_hash subject files_count
+            short_hash=$(git rev-parse --short "$hash")
+            subject=$(git log -1 --format="%s" "$hash")
+            files_count=$(git diff-tree --no-commit-id -r "$hash" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+
+            printf "  ${CYAN}%2d${RESET} %-50s ${DIM}%s  %d file(s)${RESET}\n" \
+                "$index" "$subject" "$short_hash" "$files_count"
+            ((index++))
+        done <<< "$commits"
+        echo ""
+    fi
+
+    # Check for potential conflicts (quick heuristic)
+    if [[ "$tracking_head" != "$upstream_head" && "$patch_count" -gt 0 ]]; then
+        # Check if files touched by patches were also changed upstream
+        local patch_files upstream_files overlap
+        patch_files=$(git diff --name-only "$base..$PATCHES_BRANCH" 2>/dev/null | sort || true)
+        upstream_files=$(git diff --name-only "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH" 2>/dev/null | sort || true)
+
+        if [[ -n "$patch_files" && -n "$upstream_files" ]]; then
+            overlap=$(comm -12 <(echo "$patch_files") <(echo "$upstream_files"))
+            if [[ -n "$overlap" ]]; then
+                echo -e "  ${YELLOW}Potential conflict risk:${RESET} These files were changed both by you and upstream:"
+                echo "$overlap" | while read -r f; do
+                    echo -e "    ${YELLOW}${f}${RESET}"
+                done
+                echo ""
+                echo -e "  ${DIM}Run 'bingo-light sync --dry-run' to test before syncing.${RESET}"
+                echo ""
+            else
+                echo -e "  ${GREEN}No overlap${RESET} between your patches and upstream changes."
+                dim "  Sync should be clean."
+                echo ""
+            fi
+        fi
+    fi
+
+    # rerere stats
+    local rerere_count
+    rerere_count=$(find .git/rr-cache -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ' || true)
+    if [[ "$rerere_count" -gt 0 ]]; then
+        dim "  rerere: $rerere_count recorded resolution(s) (conflicts auto-resolved on repeat)"
+    fi
+    return 0
+}
+
+# ─── Command: doctor ──────────────────────────────────────────────────────────
+
+cmd_doctor() {
+    load_config
+
+    local issues=0
+    local checks_json="["
+    local json_first=true
+
+    _check() {
+        local name="$1" status="$2" detail="${3:-}"
+        if [[ "$JSON_MODE" == true ]]; then
+            [[ "$json_first" == true ]] && json_first=false || checks_json+=","
+            checks_json+='{"name":"'"$name"'","status":"'"$status"'","detail":"'"$(echo "$detail" | json_escape)"'"}'
+        fi
+        if [[ "$status" == "fail" ]]; then issues=$((issues + 1)); fi
+    }
+
+    [[ "$JSON_MODE" != true ]] && { header "bingo-light doctor"; echo ""; }
+
+    # Check git version
+    local git_ver
+    git_ver=$(git --version | awk '{print $3}')
+    _check "git" "pass" "$git_ver"
+    [[ "$JSON_MODE" != true ]] && echo -e "  git version: ${GREEN}${git_ver}${RESET}"
+
+    local rerere_enabled
+    rerere_enabled=$(git config rerere.enabled 2>/dev/null || echo "false")
+    if [[ "$rerere_enabled" == "true" ]]; then
+        _check "rerere" "pass" "enabled"
+        [[ "$JSON_MODE" != true ]] && echo -e "  rerere: ${GREEN}enabled${RESET}"
+    else
+        _check "rerere" "fail" "disabled"
+        [[ "$JSON_MODE" != true ]] && echo -e "  rerere: ${RED}disabled${RESET}"
+    fi
+
+    local upstream_url_actual
+    upstream_url_actual=$(git remote get-url upstream 2>/dev/null || echo "")
+    if [[ -n "$upstream_url_actual" ]]; then
+        _check "upstream_remote" "pass" "$upstream_url_actual"
+        [[ "$JSON_MODE" != true ]] && echo -e "  upstream remote: ${GREEN}configured${RESET}"
+    else
+        _check "upstream_remote" "fail" "not found"
+        [[ "$JSON_MODE" != true ]] && echo -e "  upstream remote: ${RED}not found${RESET}"
+    fi
+
+    if git rev-parse --verify "$TRACKING_BRANCH" &>/dev/null; then
+        _check "tracking_branch" "pass" "$TRACKING_BRANCH"
+        [[ "$JSON_MODE" != true ]] && echo -e "  tracking branch: ${GREEN}exists${RESET}"
+    else
+        _check "tracking_branch" "fail" "missing"
+        [[ "$JSON_MODE" != true ]] && echo -e "  tracking branch: ${RED}missing${RESET}"
+    fi
+
+    if git rev-parse --verify "$PATCHES_BRANCH" &>/dev/null; then
+        _check "patches_branch" "pass" "$PATCHES_BRANCH"
+        [[ "$JSON_MODE" != true ]] && echo -e "  patches branch: ${GREEN}exists${RESET}"
+    else
+        _check "patches_branch" "fail" "missing"
+        [[ "$JSON_MODE" != true ]] && echo -e "  patches branch: ${RED}missing${RESET}"
+    fi
+
+    # Patch stack integrity
+    if [[ "$issues" -eq 0 ]]; then
+        [[ "$JSON_MODE" != true ]] && { echo ""; info "Testing patch stack integrity..."; }
+        local base
+        base=$(patches_base) || {
+            _check "patch_stack" "pass" "no patches"
+            [[ "$JSON_MODE" == true ]] && { checks_json+="]"; json_out '{"ok":true,"issues":0,"checks":'"$checks_json"'}'; }
+            [[ "$JSON_MODE" != true ]] && success "No patches to test."
+            return 0
+        }
+        local patch_count
+        patch_count=$(git rev-list --count "$base..$PATCHES_BRANCH" 2>/dev/null || echo 0)
+        if [[ "$patch_count" -eq 0 ]]; then
+            _check "patch_stack" "pass" "no patches"
+        else
+            trap 'git branch -D "bl-doctor-$$" &>/dev/null' EXIT
+            local tmp_branch="bl-doctor-$$"
+            git branch "$tmp_branch" "$PATCHES_BRANCH" 2>/dev/null
+            local current_tracking
+            current_tracking=$(git rev-parse "$TRACKING_BRANCH")
+            if git rebase --onto "upstream/$UPSTREAM_BRANCH" "$current_tracking" "$tmp_branch" &>/dev/null; then
+                _check "patch_stack" "pass" "all $patch_count patch(es) clean"
+                [[ "$JSON_MODE" != true ]] && echo -e "  patch stack: ${GREEN}all $patch_count patch(es) apply cleanly${RESET}"
+                git checkout "$PATCHES_BRANCH" &>/dev/null || true
+            else
+                _check "patch_stack" "fail" "conflicts detected"
+                [[ "$JSON_MODE" != true ]] && echo -e "  patch stack: ${YELLOW}conflicts detected${RESET}"
+                git rebase --abort &>/dev/null || true
+                git checkout "$PATCHES_BRANCH" &>/dev/null || true
+            fi
+            git branch -D "$tmp_branch" &>/dev/null || true
+            trap - EXIT
+        fi
+    fi
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        _check "config" "pass" "present"
+        [[ "$JSON_MODE" != true ]] && echo -e "  config file: ${GREEN}present${RESET}"
+    else
+        _check "config" "fail" "missing"
+        [[ "$JSON_MODE" != true ]] && echo -e "  config file: ${RED}missing${RESET}"
+    fi
+
+    if [[ "$JSON_MODE" == true ]]; then
+        checks_json+="]"
+        json_out '{"ok":'"$([ "$issues" -eq 0 ] && echo true || echo false)"',"issues":'"$issues"',"checks":'"$checks_json"'}'
+    else
+        echo ""
+        if [[ "$issues" -eq 0 ]]; then success "Everything looks good!"; else warn "$issues issue(s) found."; fi
+    fi
+}
+
+# ─── Command: auto-sync ──────────────────────────────────────────────────────
+
+cmd_autosync() {
+    load_config
+
+    local output_dir=".github/workflows"
+    local output_file="$output_dir/bingo-light-sync.yml"
+
+    [[ "$JSON_MODE" != true ]] && header "Generate GitHub Actions auto-sync workflow"
+    [[ "$JSON_MODE" != true ]] && echo ""
+
+    # Ask for schedule
+    local choice="${BINGO_SCHEDULE:-}"
+    if [[ -z "$choice" && "$YES_MODE" != true ]]; then
+        echo -e "  How often should auto-sync run?"
+        echo -e "  ${CYAN}1${RESET}) Daily (recommended)"
+        echo -e "  ${CYAN}2${RESET}) Every 6 hours"
+        echo -e "  ${CYAN}3${RESET}) Weekly"
+        echo -n "  Choose [1-3, default 1]: "
+        read -r choice
+    fi
+
+    local cron_schedule
+    local schedule_desc
+    case "${choice:-1}" in
+        2|6h)     cron_schedule="0 */6 * * *"; schedule_desc="every 6 hours" ;;
+        3|weekly) cron_schedule="0 0 * * 1";   schedule_desc="weekly (Monday)" ;;
+        *)        cron_schedule="0 0 * * *";   schedule_desc="daily" ;;
+    esac
+
+    mkdir -p "$output_dir"
+
+    cat > "$output_file" << 'WORKFLOW_EOF'
+# Generated by bingo-light
+# Automatically syncs your fork with upstream and rebases patches.
+# On failure, creates a GitHub Issue to notify you.
+
+name: Bingo Light Auto-Sync
+
+on:
+  schedule:
+    - cron: 'CRON_PLACEHOLDER'
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "bingo-light[bot]"
+          git config user.email "bingo-light[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream UPSTREAM_PLACEHOLDER || git remote set-url upstream UPSTREAM_PLACEHOLDER
+          git fetch upstream
+
+      - name: Rebase patches
+        id: rebase
+        run: |
+          # Save tracking before update
+          SAVED_TRACKING=$(git rev-parse TRACKING_PLACEHOLDER)
+          # Update tracking
+          git branch -f TRACKING_PLACEHOLDER upstream/BRANCH_PLACEHOLDER
+          # Rebase using saved base
+          git checkout PATCHES_PLACEHOLDER
+
+          if git rebase --onto TRACKING_PLACEHOLDER $SAVED_TRACKING PATCHES_PLACEHOLDER 2>&1; then
+            echo "result=success" >> $GITHUB_OUTPUT
+          else
+            git rebase --abort || true
+            echo "result=conflict" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push if successful
+        if: steps.rebase.outputs.result == 'success'
+        run: |
+          git push origin PATCHES_PLACEHOLDER --force-with-lease
+          git push origin TRACKING_PLACEHOLDER --force-with-lease
+
+      - name: Create issue on conflict
+        if: steps.rebase.outputs.result == 'conflict'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `[bingo-light] Sync conflict detected (${new Date().toISOString().split('T')[0]})`;
+            const body = `## Auto-sync failed\n\nUpstream has changes that conflict with your patches.\n\n**Action required:** Run \`bingo-light sync\` locally to resolve conflicts.\n\n---\n*This issue was created automatically by bingo-light.*`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['bingo-light', 'sync-conflict']
+            });
+WORKFLOW_EOF
+
+    # Replace placeholders (bash parameter expansion — safe for any URL characters)
+    local content
+    content=$(<"$output_file")
+    content="${content//CRON_PLACEHOLDER/$cron_schedule}"
+    content="${content//UPSTREAM_PLACEHOLDER/$UPSTREAM_URL}"
+    content="${content//BRANCH_PLACEHOLDER/$UPSTREAM_BRANCH}"
+    content="${content//TRACKING_PLACEHOLDER/$TRACKING_BRANCH}"
+    content="${content//PATCHES_PLACEHOLDER/$PATCHES_BRANCH}"
+    printf '%s\n' "$content" > "$output_file"
+
+    if [[ "$JSON_MODE" == true ]]; then
+        json_out '{"ok":true,"workflow":"'"$output_file"'","schedule":"'"$schedule_desc"'"}'
+    else
+        success "Workflow generated: ${BOLD}${output_file}${RESET}"
+        echo ""
+        echo -e "  Schedule: ${CYAN}${schedule_desc}${RESET} ($cron_schedule)"
+        echo -e "  On success: auto-pushes rebased patches"
+        echo -e "  On conflict: creates a GitHub Issue to notify you"
+        echo ""
+        echo -e "  ${BOLD}Next:${RESET} Commit and push this file to enable auto-sync."
+    fi
+}
+
+# ─── Command: log ─────────────────────────────────────────────────────────────
+
+cmd_log() {
+    load_config
+
+    if [[ "$JSON_MODE" == true ]]; then
+        local entries_json="["
+        local first=true
+        while IFS='|' read -r ref date action; do
+            [[ -z "$ref" ]] && continue
+            [[ "$first" == true ]] && first=false || entries_json+=","
+            entries_json+='{"ref":"'"$(echo "$ref" | json_escape)"'","date":"'"$(echo "$date" | json_escape)"'","action":"'"$(echo "$action" | json_escape)"'"}'
+        done < <(git reflog "$TRACKING_BRANCH" --format="%gd|%cr|%gs" -20 2>/dev/null)
+        entries_json+="]"
+        json_out '{"ok":true,"entries":'"$entries_json"'}'
+        return 0
+    fi
+
+    header "Sync history"
+    echo ""
+
+    git reflog "$TRACKING_BRANCH" --format="%C(cyan)%gd%C(reset) %C(dim)%cr%C(reset) %gs" -20 2>/dev/null || {
+        info "No sync history yet."
+    }
+}
+
+# ─── Command: undo ────────────────────────────────────────────────────────────
+
+cmd_undo() {
+    load_config
+    ensure_clean_tree
+
+    [[ "$JSON_MODE" != true ]] && header "Undo last sync"
+    [[ "$JSON_MODE" != true ]] && echo ""
+
+    # Find previous state — prefer persisted file, fall back to reflog
+    local prev_head=""
+    if [[ -f .bingo/.undo-head ]]; then
+        prev_head=$(cat .bingo/.undo-head)
+    else
+        prev_head=$(git reflog "$PATCHES_BRANCH" --format="%H" -2 2>/dev/null | tail -1 || true)
+    fi
+
+    if [[ -z "$prev_head" ]]; then
+        fatal "No previous state found to undo. Have you synced yet?"
+    fi
+
+    local current_head
+    current_head=$(git rev-parse "$PATCHES_BRANCH")
+
+    if [[ "$prev_head" == "$current_head" ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"message":"nothing to undo"}'
+        else
+            info "Nothing to undo."
+        fi
+        return 0
+    fi
+
+    if [[ "$JSON_MODE" != true ]]; then
+        echo -e "  Current HEAD: ${DIM}$(git log -1 --format="%h %s" "$current_head")${RESET}"
+        echo -e "  Revert to:    ${BOLD}$(git log -1 --format="%h %s (%cr)" "$prev_head")${RESET}"
+        echo ""
+    fi
+    confirm "Proceed? [y/N]" "n" || { info "Cancelled."; return 0; }
+
+    # Restore patches branch
+    if [[ "$(current_branch)" == "$PATCHES_BRANCH" ]]; then
+        git reset --hard "$prev_head" &>/dev/null
+    else
+        git branch -f "$PATCHES_BRANCH" "$prev_head" &>/dev/null
+    fi
+
+    # Restore tracking branch from saved state (so sync can re-detect upstream)
+    if [[ -f .bingo/.undo-tracking ]]; then
+        local prev_tracking
+        prev_tracking=$(cat .bingo/.undo-tracking)
+        git branch -f "$TRACKING_BRANCH" "$prev_tracking" &>/dev/null
+        rm -f .bingo/.undo-tracking
+    fi
+    # Mark that undo happened — prevents _fix_stale_tracking from re-advancing tracking
+    touch .bingo/.undo-active
+
+    if [[ "$JSON_MODE" == true ]]; then
+        json_out '{"ok":true,"restored_to":"'"$prev_head"'"}'
+    else
+        success "Undone. Patches and tracking branches restored."
+    fi
+}
+
+# ─── Command: diff ────────────────────────────────────────────────────────────
+
+cmd_diff() {
+    load_config
+
+    local base
+    base=$(patches_base) || {
+        if [[ "$JSON_MODE" == true ]]; then json_out '{"ok":true,"stat":"","diff":""}'; else info "No patches — nothing to diff."; fi
+        return 0
+    }
+
+    if [[ "$JSON_MODE" == true ]]; then
+        local stat diff_content diff_len
+        stat=$(git diff "$base..$PATCHES_BRANCH" --stat 2>/dev/null | json_escape)
+        diff_content=$(git diff "$base..$PATCHES_BRANCH" 2>/dev/null | json_escape)
+        diff_len=${#diff_content}
+        if [[ $diff_len -gt 50000 ]]; then
+            local preview="${diff_content:0:2000}"
+            preview="${preview%\\}"
+            local size_kb=$(( diff_len / 1024 ))
+            json_out '{"ok":true,"truncated":true,"stat":"'"$stat"'","preview":"'"$preview"'","full_size":'"$diff_len"',"message":"Diff too large ('"$size_kb"'KB). Showing preview. Use bingo-light diff without --json for full output."}'
+        else
+            json_out '{"ok":true,"truncated":false,"stat":"'"$stat"'","diff":"'"$diff_content"'"}'
+        fi
+        return 0
+    fi
+
+    header "All changes from your patch stack:"
+    echo ""
+
+    git diff "$base..$PATCHES_BRANCH" --stat
+    echo ""
+    git diff "$base..$PATCHES_BRANCH"
+}
+
+# ─── Command: conflict-analyze ────────────────────────────────────────────────
+# AI-native: outputs structured conflict info for LLM agents to resolve
+
+cmd_conflict_analyze() {
+    ensure_git_repo
+
+    # Check if we're in a rebase
+    if [[ ! -d .git/rebase-merge && ! -d .git/rebase-apply ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"in_rebase":false,"conflicts":[]}'
+        else
+            info "No rebase in progress. No conflicts to analyze."
+        fi
+        return 0
+    fi
+
+    local conflicted_files
+    conflicted_files=$(git ls-files --unmerged 2>/dev/null | cut -f2 | sort -u 2>/dev/null || true)
+
+    if [[ -z "$conflicted_files" ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"in_rebase":true,"conflicts":[]}'
+        else
+            info "Rebase in progress but no unresolved conflicts."
+        fi
+        return 0
+    fi
+
+    # Get current patch info
+    local current_patch=""
+    if [[ -f .git/rebase-merge/message ]]; then
+        current_patch=$(head -1 .git/rebase-merge/message)
+    fi
+
+    if [[ "$JSON_MODE" == true ]]; then
+        # Build JSON output
+        local json='{"ok":true,"in_rebase":true,"current_patch":"'"$(echo "$current_patch" | json_escape)"'",'
+        json+='"conflicts":['
+
+        local first=true
+        while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            [[ "$first" == true ]] && first=false || json+=','
+
+            # Extract conflict sections
+            local ours theirs
+            ours=$(sed -n '/^<<<<<<</,/^=======/{ /^<<<<<<</d; /^=======/d; p; }' "$file" 2>/dev/null | sed '/^|||||||/,$d' | json_escape)
+            theirs=$(sed -n '/^=======/,/^>>>>>>>/{ /^=======/d; /^>>>>>>>/d; p; }' "$file" 2>/dev/null | json_escape)
+            local conflict_count
+            conflict_count=$(grep -c '^<<<<<<< ' "$file" 2>/dev/null || echo 0)
+
+            # Detect conflict type and generate merge hint for AI
+            local merge_hint="Merge both changes. Keep ours (upstream) and theirs (your patch)."
+            if [[ -z "$ours" && -n "$theirs" ]]; then
+                merge_hint="Upstream deleted content that your patch modifies. Decide: keep your version or accept upstream deletion."
+            elif [[ -n "$ours" && -z "$theirs" ]]; then
+                merge_hint="Your patch deleted content that upstream modified. Decide: keep upstream changes or accept your deletion."
+            elif [[ "$conflict_count" -gt 1 ]]; then
+                merge_hint="Multiple conflict regions. Resolve each <<<<<<< ... >>>>>>> block independently. Usually: keep both additions, reconcile edits."
+            fi
+
+            json+='{"file":"'"$(echo "$file" | json_escape)"'","conflict_count":'"$conflict_count"','
+            json+='"ours":"'"$ours"'","theirs":"'"$theirs"'","merge_hint":"'"$(echo "$merge_hint" | json_escape)"'"}'
+        done <<< "$conflicted_files"
+
+        json+='],'
+        json+='"resolution_steps":['
+        json+='"1. Read ours (upstream) and theirs (your patch) for each conflict",'
+        json+='"2. Write the merged file content (include both changes where possible)",'
+        json+='"3. Run: git add <conflicted-files>",'
+        json+='"4. Run: git rebase --continue",'
+        json+='"5. If more conflicts appear, repeat from step 1",'
+        json+='"6. To abort instead: git rebase --abort"]}'
+
+        json_out "$json"
+    else
+        header "Conflict Analysis"
+        echo ""
+        if [[ -n "$current_patch" ]]; then
+            echo -e "  ${BOLD}Patch:${RESET} $current_patch"
+            echo ""
+        fi
+
+        while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            local conflict_count
+            conflict_count=$(grep -c '^<<<<<<< ' "$file" 2>/dev/null || echo 0)
+            echo -e "  ${RED}$file${RESET} ($conflict_count conflict region(s))"
+            echo ""
+
+            # Show each conflict region
+            awk '/^<<<<<<< /{found=1} found{print "    " $0} /^>>>>>>>/{found=0; print ""}' "$file"
+        done <<< "$conflicted_files"
+
+        echo -e "  ${BOLD}To resolve:${RESET}"
+        echo "    1. Edit the files above, remove <<<<<<< ======= >>>>>>> markers"
+        echo "    2. git add <files>"
+        echo "    3. git rebase --continue"
+    fi
+}
+
+# ─── Command: json-status (structured status for AI) ─────────────────────────
+
+cmd_json_status() {
+    load_config
+
+    git fetch upstream 2>/dev/null || true
+
+    # Gather all data, then use Python for safe JSON construction
+    local tracking_head upstream_head
+    tracking_head=$(git rev-parse "$TRACKING_BRANCH" 2>/dev/null || echo "")
+    upstream_head=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+
+    local behind=0
+    if [[ -n "$tracking_head" && -n "$upstream_head" && "$tracking_head" != "$upstream_head" ]]; then
+        behind=$(git rev-list --count "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo 0)
+    fi
+
+    local base="" patch_count=0
+    if base=$(patches_base 2>/dev/null); then
+        patch_count=$(git rev-list --count "$base..$PATCHES_BRANCH" 2>/dev/null || echo 0)
+    fi
+
+    # Collect patch data via single-pass git log (avoids N subprocesses)
+    local patch_data=""
+    if [[ "$patch_count" -gt 0 ]]; then
+        patch_data=$(git log --format="PATCH%x09%h%x09%s" --numstat --reverse "$base..$PATCHES_BRANCH" 2>/dev/null | awk '
+/^PATCH\t/ {
+    if (n>0) printf "%s\t%s\t%s\t%d\n", name, hash, subj, files
+    n++; files=0
+    split($0, a, "\t"); hash=a[2]; subj=a[3]
+    name=""
+    if (match(subj, /^\[bl\] [^:]+:/)) { name=substr(subj, 6); sub(/:.*/, "", name) }
+    next
+}
+/^[0-9]+\t[0-9]+\t/ { files++; next }
+/^$/ { next }
+END { if (n>0) printf "%s\t%s\t%s\t%d\n", name, hash, subj, files }
+')
+    fi
+
+    # Overlap detection
+    local overlap=""
+    if [[ "$behind" -gt 0 && "$patch_count" -gt 0 && -n "$base" ]]; then
+        local patch_files upstream_files
+        patch_files=$(git diff --name-only "$base..$PATCHES_BRANCH" 2>/dev/null | sort || true)
+        upstream_files=$(git diff --name-only "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH" 2>/dev/null | sort || true)
+        if [[ -n "$patch_files" && -n "$upstream_files" ]]; then
+            overlap=$(comm -12 <(echo "$patch_files") <(echo "$upstream_files"))
+        fi
+    fi
+
+    local in_rebase=false
+    [[ -d .git/rebase-merge || -d .git/rebase-apply ]] && in_rebase=true
+
+    # Detect stale patches: tracking has advanced but patches haven't been rebased
+    local patches_stale=false
+    if [[ -n "$base" && -n "$tracking_head" && "$base" != "$tracking_head" ]]; then
+        patches_stale=true
+    fi
+
+    # Build JSON safely with Python (handles all escaping correctly)
+    printf '%s\n---PATCHES---\n%s---OVERLAP---\n%s' \
+        "$UPSTREAM_URL"$'\t'"$UPSTREAM_BRANCH"$'\t'"$(current_branch)"$'\t'"$behind"$'\t'"$patch_count"$'\t'"$in_rebase"$'\t'"$patches_stale" \
+        "$patch_data" \
+        "$overlap" | python3 -c "
+import json, sys
+data = sys.stdin.read()
+parts = data.split('---PATCHES---\n')
+header = parts[0].strip().split('\t')
+rest = parts[1].split('---OVERLAP---\n')
+patch_lines = rest[0].strip()
+overlap_text = rest[1].strip() if len(rest) > 1 else ''
+
+url, branch, cur_branch, behind, pcount, in_rebase = header[:6]
+patches_stale = header[6] if len(header) > 6 else 'false'
+behind, pcount = int(behind), int(pcount)
+
+patches = []
+for line in patch_lines.split('\n'):
+    if not line.strip(): continue
+    fields = line.split('\t')
+    if len(fields) >= 4:
+        patches.append({'name': fields[0], 'hash': fields[1], 'subject': fields[2], 'files': int(fields[3])})
+
+overlap = [f for f in overlap_text.split('\n') if f.strip()]
+
+in_reb = in_rebase == 'true'
+stale = patches_stale == 'true'
+risk = len(overlap) > 0
+up2date = behind == 0 and not stale
+
+# Compute recommended action for AI decision-making
+if in_reb:
+    action = 'resolve_conflict'
+    reason = 'Rebase in progress. Run conflict-analyze to see conflicts, resolve them, then git add + git rebase --continue.'
+elif stale and behind == 0:
+    action = 'sync_safe'
+    reason = 'Patches are on an older base than tracking branch. Run sync to rebase patches onto current upstream.'
+elif up2date:
+    action = 'up_to_date'
+    reason = 'Fork is in sync with upstream. No action needed.'
+elif behind > 0 and not risk:
+    action = 'sync_safe'
+    reason = f'{behind} commits behind. No file overlap detected. Safe to sync.'
+elif behind > 0 and risk:
+    action = 'sync_risky'
+    reason = f'{behind} commits behind. {len(overlap)} file(s) overlap with your patches — conflicts likely. Run sync --dry-run first.'
+else:
+    action = 'unknown'
+    reason = 'Check status manually.'
+
+result = {
+    'ok': True, 'upstream_url': url, 'upstream_branch': branch,
+    'current_branch': cur_branch, 'behind': behind, 'patch_count': pcount,
+    'patches': patches, 'conflict_risk': overlap,
+    'in_rebase': in_reb, 'up_to_date': up2date,
+    'recommended_action': action, 'reason': reason
+}
+print(json.dumps(result))
+" 2>/dev/null || json_out '{"ok":false,"error":"json build failed"}'
+}
+
+# ─── Command: config ───────────────────────────────────────────────────────────
+
+cmd_config() {
+    local subcmd="${1:-}"
+    shift 2>/dev/null || true
+
+    ensure_git_repo
+    [[ -f "$CONFIG_FILE" ]] || fatal "Not initialized."
+
+    case "$subcmd" in
+        get)
+            local key="${1:-}"
+            [[ -z "$key" ]] && fatal "Usage: bingo-light config get <key>"
+            local val
+            val=$(git config --file "$CONFIG_FILE" "bingolight.$key" 2>/dev/null || git config --file "$CONFIG_FILE" "$key" 2>/dev/null || echo "")
+            if [[ "$JSON_MODE" == true ]]; then
+                json_out '{"ok":true,"key":"'"$(echo "$key" | json_escape)"'","value":"'"$(echo "$val" | json_escape)"'"}'
+            else
+                echo "$val"
+            fi
+            ;;
+        set)
+            local key="${1:-}" val="${2:-}"
+            [[ -z "$key" || -z "$val" ]] && fatal "Usage: bingo-light config set <key> <value>"
+            git config --file "$CONFIG_FILE" "bingolight.$key" "$val"
+            if [[ "$JSON_MODE" == true ]]; then
+                json_out '{"ok":true,"key":"'"$(echo "$key" | json_escape)"'","value":"'"$(echo "$val" | json_escape)"'"}'
+            else
+                success "Set $key = $val"
+            fi
+            ;;
+        list)
+            if [[ "$JSON_MODE" == true ]]; then
+                local items="{"
+                local first=true
+                while IFS='=' read -r k v; do
+                    [[ -z "$k" ]] && continue
+                    [[ "$first" == true ]] && first=false || items+=","
+                    items+='"'"$(echo "$k" | json_escape)"'":"'"$(echo "$v" | json_escape)"'"'
+                done < <(git config --file "$CONFIG_FILE" --list 2>/dev/null)
+                items+="}"
+                json_out '{"ok":true,"config":'"$items"'}'
+            else
+                git config --file "$CONFIG_FILE" --list 2>/dev/null
+            fi
+            ;;
+        *)
+            if [[ "$JSON_MODE" == true ]]; then fatal "config: missing subcommand (get, set, list)"; fi
+            echo -e "${BOLD}Usage:${RESET} bingo-light config <get|set|list>"
+            echo ""
+            echo "  get <key>          Get a config value"
+            echo "  set <key> <value>  Set a config value"
+            echo "  list               List all config"
+            echo ""
+            echo -e "${DIM}Examples:${RESET}"
+            echo "  bingo-light config set sync.dry-run-first true"
+            echo "  bingo-light config get sync.dry-run-first"
+            return 1
+            ;;
+    esac
+}
+
+# ─── Command: patch meta ──────────────────────────────────────────────────────
+
+METADATA_DIR=".bingo"
+METADATA_FILE=".bingo/metadata.json"
+
+ensure_metadata() {
+    mkdir -p "$METADATA_DIR"
+    [[ -f "$METADATA_FILE" ]] || echo '{"patches":{}}' > "$METADATA_FILE"
+}
+
+cmd_patch_meta() {
+    load_config
+    local target="${1:-}"
+    shift 2>/dev/null || true
+
+    if [[ -z "$target" ]]; then
+        if [[ "$JSON_MODE" == true ]]; then fatal "patch meta: missing <name>"; fi
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch meta <name> [--set-reason|--set-tag|--set-expires|--set-upstream-pr] <value>"
+        return 1
+    fi
+
+    ensure_metadata
+
+    # Verify patch exists (unless just querying — metadata can exist for dropped patches)
+    local base
+    if base=$(patches_base 2>/dev/null); then
+        if ! git log --format="%s" "$base..$PATCHES_BRANCH" 2>/dev/null | grep -qF "$PATCH_PREFIX $target:"; then
+            fatal "Patch '${target}' not found."
+        fi
+    fi
+
+    local action="" value=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --set-reason|reason)              action="reason"; value="${2:-}"; shift 2 ;;
+            --set-tag|tag)                    action="tag"; value="${2:-}"; shift 2 ;;
+            --set-expires|expires)            action="expires"; value="${2:-}"; shift 2 ;;
+            --set-upstream-pr|upstream_pr|upstream-pr) action="upstream_pr"; value="${2:-}"; shift 2 ;;
+            --set-status|status)              action="status"; value="${2:-}"; shift 2 ;;
+            --json|--yes) shift ;;
+            *) fatal "patch meta: unknown key '$1'. Valid keys: reason, tag, expires, upstream_pr, status" ;;
+        esac
+    done
+
+    if [[ -z "$action" ]]; then
+        # Show metadata for this patch
+        local meta
+        meta=$(printf '%s\n%s' "$target" "$METADATA_FILE" | python3 -c "
+import json, sys
+lines = sys.stdin.read().strip().split('\n')
+target, path = lines[0], lines[1]
+try:
+    with open(path) as f: data = json.load(f)
+except: data = {'patches': {}}
+p = data.get('patches', {}).get(target, {})
+if not p: p = {'reason':'','tags':[],'expires':None,'upstream_pr':'','status':'permanent'}
+json.dump(p, sys.stdout)
+" 2>/dev/null || echo '{}')
+
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"patch":"'"$(echo "$target" | json_escape)"'","meta":'"$meta"'}'
+        else
+            echo -e "  ${BOLD}$target${RESET}"
+            echo "$meta" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for k, v in d.items():
+    print(f'  {k}: {v}')
+" 2>/dev/null
+        fi
+    else
+        # Set metadata (data passed via stdin, not shell interpolation)
+        printf '%s\n%s\n%s\n%s\n%s' "$target" "$action" "$value" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$METADATA_FILE" | python3 -c "
+import json, sys, os
+lines = sys.stdin.read().strip().split('\n')
+target, action, value, ts, path = lines[0], lines[1], lines[2], lines[3], lines[4]
+data = {'patches': {}}
+if os.path.exists(path):
+    with open(path) as f: data = json.load(f)
+patches = data.setdefault('patches', {})
+p = patches.setdefault(target, {'reason':'','tags':[],'expires':None,'upstream_pr':'','status':'permanent','created':ts})
+if action == 'tag':
+    if value not in p.get('tags', []): p.setdefault('tags', []).append(value)
+elif action in ('reason','expires','upstream_pr','status'):
+    p[action] = value
+import tempfile
+tmp = tempfile.NamedTemporaryFile(mode='w', dir=os.path.dirname(path) or '.', delete=False, suffix='.tmp')
+json.dump(data, tmp, indent=2)
+tmp.close()
+os.replace(tmp.name, path)
+" 2>/dev/null
+
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"patch":"'"$(echo "$target" | json_escape)"'","set":"'"$action"'","value":"'"$(echo "$value" | json_escape)"'"}'
+        else
+            success "Set $action = $value for patch '$target'"
+        fi
+    fi
+}
+
+# ─── Command: patch squash ────────────────────────────────────────────────────
+
+patch_squash() {
+    load_config
+    ensure_clean_tree
+    local idx1="${1:-}" idx2="${2:-}"
+
+    if [[ -z "$idx1" || -z "$idx2" ]]; then
+        echo -e "${BOLD}Usage:${RESET} bingo-light patch squash <index1> <index2>"
+        echo "  Squash two adjacent patches into one."
+        return 1
+    fi
+
+    # Validate indices are integers
+    [[ "$idx1" =~ ^[0-9]+$ ]] || fatal "Index must be a number: $idx1"
+    [[ "$idx2" =~ ^[0-9]+$ ]] || fatal "Index must be a number: $idx2"
+    local total
+    total=$(count_patches)
+    [[ "$idx1" -ge 1 && "$idx1" -le "$total" ]] || fatal "Index out of range: $idx1 (1-$total)"
+    [[ "$idx2" -ge 1 && "$idx2" -le "$total" ]] || fatal "Index out of range: $idx2 (1-$total)"
+    [[ "$idx1" -ne "$idx2" ]] || fatal "Cannot squash a patch with itself."
+
+    local base
+    base=$(patches_base) || { fatal "No patches."; }
+
+    [[ "$(current_branch)" == "$PATCHES_BRANCH" ]] || git checkout "$PATCHES_BRANCH" &>/dev/null
+
+    # Use GIT_SEQUENCE_EDITOR to programmatically squash (macOS + Linux compatible)
+    local script
+    script=$(mktemp)
+    trap 'rm -f "$script"' RETURN
+    cat > "$script" << EOF
+#!/bin/bash
+# Change pick on line $idx2 to squash (portable: no sed -i)
+awk 'NR==$idx2 && /^pick/{sub(/^pick/,"squash")} {print}' "\$1" > "\$1.tmp" && mv "\$1.tmp" "\$1"
+EOF
+    chmod +x "$script"
+
+    if GIT_SEQUENCE_EDITOR="$script" git rebase -i "$base" &>/dev/null; then
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"squashed":['"$idx1"','"$idx2"']}'
+        else
+            success "Patches $idx1 and $idx2 squashed."
+        fi
+    else
+        git rebase --abort &>/dev/null || true
+        fatal "Failed to squash patches."
+    fi
+}
+
+# ─── Command: patch reorder --order ───────────────────────────────────────────
+
+patch_reorder_noninteractive() {
+    local order_str="$1"
+    load_config
+    ensure_clean_tree
+
+    local base
+    base=$(patches_base) || { fatal "No patches."; }
+
+    # Validate: number of indices must equal number of patches
+    local patch_total
+    patch_total=$(git rev-list --count "$base..$PATCHES_BRANCH" 2>/dev/null || echo 0)
+    local index_count
+    index_count=$(echo "$order_str" | tr ',' '\n' | grep -c '[0-9]' || echo 0)
+    if [[ "$index_count" -ne "$patch_total" ]]; then
+        fatal "Reorder requires exactly $patch_total indices (one per patch), got $index_count."
+    fi
+
+    [[ "$(current_branch)" == "$PATCHES_BRANCH" ]] || git checkout "$PATCHES_BRANCH" &>/dev/null
+
+    # Generate a GIT_SEQUENCE_EDITOR script that reorders pick lines
+    local editor_script
+    editor_script=$(mktemp)
+    trap 'rm -f "$editor_script"' RETURN
+    printf '%s' "$order_str" | python3 -c "
+import sys
+order = [int(x.strip()) for x in sys.stdin.read().strip().split(',')]
+lines = []
+for i, idx in enumerate(order):
+    lines.append(f'line{i}=\$(sed -n \"{idx}p\" \"\$1\")')
+writes = []
+for i in range(len(order)):
+    op = '>' if i == 0 else '>>'
+    writes.append(f'echo \"\$line{i}\" {op} \"\$1.tmp\"')
+script = '#!/bin/bash\n' + '\n'.join(lines) + '\n' + '\n'.join(writes) + '\nmv \"\$1.tmp\" \"\$1\"\n'
+print(script)
+" > "$editor_script" 2>/dev/null
+    chmod +x "$editor_script"
+
+    if GIT_SEQUENCE_EDITOR="bash $editor_script" git rebase -i "$base" &>/dev/null; then
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"reordered":"'"$(echo "$order_str" | json_escape)"'"}'
+        else
+            success "Patches reordered: $order_str"
+        fi
+    else
+        git rebase --abort &>/dev/null || true
+        fatal "Failed to reorder patches."
+    fi
+}
+
+# ─── Command: history (sync history tracking) ────────────────────────────────
+
+SYNC_HISTORY_FILE=".bingo/sync-history.json"
+
+record_sync_history() {
+    local cwd="$1" behind="$2"
+    ensure_metadata  # creates .bingo/ dir
+
+    local upstream_before upstream_after
+    upstream_before="${3:-}"
+    upstream_after=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+
+    # Build patch mapping
+    local mapping="[]"
+    local base
+    if base=$(patches_base 2>/dev/null); then
+        mapping="["
+        local first=true
+        local commits
+        commits=$(git rev-list --reverse "$base..$PATCHES_BRANCH" 2>/dev/null)
+        while IFS= read -r hash; do
+            [[ -z "$hash" ]] && continue
+            [[ "$first" == true ]] && first=false || mapping+=","
+            local pname="" subject
+            subject=$(git log -1 --format="%s" "$hash")
+            [[ "$subject" =~ ^\[bl\]\ ([^:]+): ]] && pname="${BASH_REMATCH[1]}"
+            mapping+='{"name":"'"$(echo "$pname" | json_escape)"'","hash":"'"$(git rev-parse --short "$hash")"'"}'
+        done <<< "$commits"
+        mapping+="]"
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n%s' \
+        "$SYNC_HISTORY_FILE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$upstream_before" "$upstream_after" "$behind" "" \
+        "$mapping" | python3 -c "
+import json, sys, os
+header, mapping_json = sys.stdin.read().split('\n', 1)
+fields = header.strip().split('\t')
+path, ts, ub, ua, behind = fields[0], fields[1], fields[2], fields[3], int(fields[4])
+patches = json.loads(mapping_json.strip()) if mapping_json.strip() else []
+data = {'syncs': []}
+if os.path.exists(path):
+    with open(path) as f: data = json.load(f)
+data['syncs'].append({
+    'timestamp': ts, 'upstream_before': ub, 'upstream_after': ua,
+    'upstream_commits_integrated': behind, 'patches': patches
+})
+data['syncs'] = data['syncs'][-50:]
+import tempfile
+tmp = tempfile.NamedTemporaryFile(mode='w', dir=os.path.dirname(path) or '.', delete=False, suffix='.tmp')
+json.dump(data, tmp, indent=2)
+tmp.close()
+os.replace(tmp.name, path)
+" 2>/dev/null || true
+}
+
+cmd_history() {
+    load_config
+    ensure_metadata
+
+    if [[ ! -f "$SYNC_HISTORY_FILE" ]]; then
+        if [[ "$JSON_MODE" == true ]]; then
+            json_out '{"ok":true,"syncs":[]}'
+        else
+            info "No sync history yet."
+        fi
+        return 0
+    fi
+
+    if [[ "$JSON_MODE" == true ]]; then
+        printf '%s' "$(cat "$SYNC_HISTORY_FILE")" | python3 -c "import json,sys; d=json.load(sys.stdin); d['ok']=True; print(json.dumps(d))" 2>/dev/null
+        return 0
+    fi
+
+    header "Sync History"
+    echo ""
+
+    printf '%s' "$SYNC_HISTORY_FILE" | python3 -c "
+import json, sys
+with open(sys.stdin.read().strip()) as f: data = json.load(f)
+for s in reversed(data.get('syncs', [])[-10:]):
+    ts = s.get('timestamp', '?')[:16]
+    n = s.get('upstream_commits_integrated', 0)
+    patches = ', '.join(p['name'] for p in s.get('patches', []) if p.get('name'))
+    ub = s.get('upstream_before', '?')[:8]
+    ua = s.get('upstream_after', '?')[:8]
+    print(f'  {ts}  +{n} commits  {ub}→{ua}')
+    if patches:
+        print(f'    patches: {patches}')
+" 2>/dev/null || info "Could not read history."
+}
+
+# ─── Command: test ─────────────────────────────────────────────────────────────
+
+cmd_test() {
+    load_config
+
+    # Read test command from config, or use argument
+    local test_cmd="${1:-}"
+    if [[ -z "$test_cmd" ]]; then
+        test_cmd=$(git config --file "$CONFIG_FILE" bingolight.test.command 2>/dev/null || echo "")
+    fi
+
+    if [[ -z "$test_cmd" ]]; then
+        fatal "No test command. Set one with: bingo-light config set test.command 'make test'"
+    fi
+
+    info "Running: $test_cmd"
+    if [[ "$JSON_MODE" == true ]]; then
+        local test_output
+        if test_output=$(bash -c "$test_cmd" 2>&1); then
+            json_out '{"ok":true,"test":"pass","command":"'"$(echo "$test_cmd" | json_escape)"'"}'
+            return 0
+        else
+            json_out '{"ok":false,"test":"fail","command":"'"$(echo "$test_cmd" | json_escape)"'","output":"'"$(echo "$test_output" | json_escape)"'"}'
+            return 1
+        fi
+    else
+        if bash -c "$test_cmd"; then
+            success "Tests passed."
+            return 0
+        else
+            error "Tests failed."
+            return 1
+        fi
+    fi
+}
+
+# ─── Command: workspace ───────────────────────────────────────────────────────
+
+WORKSPACE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/bingo-light/workspace.json"
+
+cmd_workspace() {
+    local subcmd="${1:-}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        init)
+            mkdir -p "$(dirname "$WORKSPACE_CONFIG")"
+            [[ -f "$WORKSPACE_CONFIG" ]] || echo '{"repos":[]}' > "$WORKSPACE_CONFIG"
+            if [[ "$JSON_MODE" == true ]]; then
+                json_out '{"ok":true,"workspace":"'"$(echo "$WORKSPACE_CONFIG" | json_escape)"'"}'
+            else
+                success "Workspace initialized: $WORKSPACE_CONFIG"
+            fi
+            ;;
+        add)
+            local repo_path="${1:-$(pwd)}"
+            repo_path=$(cd "$repo_path" 2>/dev/null && pwd)
+            local alias="${2:-$(basename "$repo_path")}"
+            [[ -f "$WORKSPACE_CONFIG" ]] || { fatal "Run 'bingo-light workspace init' first."; }
+
+            printf '%s\n%s\n%s' "$WORKSPACE_CONFIG" "$repo_path" "$alias" | python3 -c "
+import json, sys, os, tempfile
+lines = sys.stdin.read().strip().split('\n')
+cfg, rpath, alias = lines[0], lines[1], lines[2]
+with open(cfg) as f: data = json.load(f)
+repos = data.setdefault('repos', [])
+if not any(r['path'] == rpath for r in repos):
+    repos.append({'path': rpath, 'alias': alias})
+tmp = tempfile.NamedTemporaryFile(mode='w', dir=os.path.dirname(cfg), delete=False, suffix='.tmp')
+json.dump(data, tmp, indent=2)
+tmp.close()
+os.replace(tmp.name, cfg)
+print(f'OK Added: {alias} ({rpath})')
+" 2>/dev/null | { [[ "$JSON_MODE" == true ]] && cat >/dev/null || cat; }
+            if [[ "$JSON_MODE" == true ]]; then
+                json_out '{"ok":true,"added":"'"$(echo "$alias" | json_escape)"'","path":"'"$(echo "$repo_path" | json_escape)"'"}'
+            fi
+            ;;
+        status)
+            [[ -f "$WORKSPACE_CONFIG" ]] || { fatal "No workspace. Run 'bingo-light workspace init'."; }
+
+            if [[ "$JSON_MODE" == true ]]; then
+                local results="["
+                local first=true
+                while IFS='|' read -r path alias; do
+                    [[ -z "$path" ]] && continue
+                    [[ "$first" == true ]] && first=false || results+=","
+                    local st
+                    # Run in subshell with cd
+                    st=$(cd "$path" 2>/dev/null && "$0" --json --yes status 2>/dev/null < /dev/null) || st='{"ok":false}'
+                    results+='{"alias":"'"$(echo "$alias" | json_escape)"'","path":"'"$(echo "$path" | json_escape)"'","status":'"$st"'}'
+                done < <(printf '%s' "$WORKSPACE_CONFIG" | python3 -c "
+import json, sys
+with open(sys.stdin.read().strip()) as f: data = json.load(f)
+for r in data.get('repos', []):
+    print(f\"{r['path']}|{r['alias']}\")
+" 2>/dev/null)
+                results+="]"
+                json_out '{"ok":true,"repos":'"$results"'}'
+            else
+                header "Workspace Status"
+                echo ""
+                printf "  ${BOLD}%-20s %-8s %-8s %s${RESET}\n" "Repo" "Behind" "Patches" "Risk"
+                echo "  ──────────────────────────────────────────────────"
+
+                while IFS='|' read -r path alias; do
+                    [[ -z "$path" ]] && continue
+                    local st
+                    st=$(cd "$path" 2>/dev/null && "$0" --json --yes status 2>/dev/null < /dev/null) || st='{}'
+                    local behind patches risk
+                    behind=$(echo "$st" | python3 -c "import json,sys; print(json.load(sys.stdin).get('behind','?'))" 2>/dev/null || echo "?")
+                    patches=$(echo "$st" | python3 -c "import json,sys; print(json.load(sys.stdin).get('patch_count','?'))" 2>/dev/null || echo "?")
+                    risk=$(echo "$st" | python3 -c "import json,sys; r=json.load(sys.stdin).get('conflict_risk',[]); print(len(r))" 2>/dev/null || echo "?")
+
+                    local risk_str="none"
+                    [[ "$risk" != "0" && "$risk" != "?" ]] && risk_str="${RED}${risk} file(s)${RESET}"
+                    [[ "$risk" == "0" ]] && risk_str="${GREEN}none${RESET}"
+
+                    printf "  %-20s %-8s %-8s %b\n" "$alias" "$behind" "$patches" "$risk_str"
+                done < <(printf '%s' "$WORKSPACE_CONFIG" | python3 -c "
+import json, sys
+with open(sys.stdin.read().strip()) as f: data = json.load(f)
+for r in data.get('repos', []):
+    print(f\"{r['path']}|{r['alias']}\")
+" 2>/dev/null)
+                echo ""
+            fi
+            ;;
+        sync)
+            [[ -f "$WORKSPACE_CONFIG" ]] || { fatal "No workspace."; }
+            info "Syncing all safe repos..."
+            local ws_sync_results="["
+            local ws_sync_first=true
+            while IFS='|' read -r path alias; do
+                [[ -z "$path" ]] && continue
+                info "  $alias:"
+                local result status_str="ok"
+                result=$(cd "$path" 2>/dev/null && "$0" --yes sync --force 2>&1) || true
+                if echo "$result" | grep -qi "sync complete\|up to date"; then
+                    success "    synced"
+                elif echo "$result" | grep -qi "conflict"; then
+                    warn "    conflict — skipped"
+                    status_str="conflict"
+                else
+                    warn "    failed"
+                    status_str="failed"
+                fi
+                [[ "$ws_sync_first" == true ]] && ws_sync_first=false || ws_sync_results+=","
+                ws_sync_results+='{"alias":"'"$(echo "$alias" | json_escape)"'","status":"'"$status_str"'"}'
+            done < <(printf '%s' "$WORKSPACE_CONFIG" | python3 -c "
+import json, sys
+with open(sys.stdin.read().strip()) as f: data = json.load(f)
+for r in data.get('repos', []):
+    print(f\"{r['path']}|{r['alias']}\")
+" 2>/dev/null)
+            ws_sync_results+="]"
+            if [[ "$JSON_MODE" == true ]]; then
+                json_out '{"ok":true,"synced":'"$ws_sync_results"'}'
+            else
+                success "Workspace sync complete."
+            fi
+            ;;
+        list)
+            [[ -f "$WORKSPACE_CONFIG" ]] || { fatal "No workspace."; }
+            if [[ "$JSON_MODE" == true ]]; then
+                printf '%s' "$(cat "$WORKSPACE_CONFIG")" | python3 -c "import json,sys; d=json.load(sys.stdin); d['ok']=True; print(json.dumps(d))" 2>/dev/null
+            else
+                printf '%s' "$WORKSPACE_CONFIG" | python3 -c "
+import json, sys
+with open(sys.stdin.read().strip()) as f: data = json.load(f)
+for r in data.get('repos', []):
+    print(f\"  {r['alias']:20s} {r['path']}\")
+" 2>/dev/null
+            fi
+            ;;
+        *)
+            echo -e "${BOLD}Usage:${RESET} bingo-light workspace <command>"
+            echo ""
+            echo "Commands:"
+            echo -e "  ${CYAN}init${RESET}                  Initialize workspace config"
+            echo -e "  ${CYAN}add${RESET} [path] [alias]    Add repo to workspace"
+            echo -e "  ${CYAN}list${RESET}                  List registered repos"
+            echo -e "  ${CYAN}status${RESET}                Status of all repos"
+            echo -e "  ${CYAN}sync${RESET}                  Sync all safe repos"
+            return 1
+            ;;
+    esac
+}
+
+# ─── Command: session ─────────────────────────────────────────────────────────
+
+cmd_session() {
+    local subcmd="${1:-}"
+    shift 2>/dev/null || true
+
+    load_config
+
+    local session_file=".bingo/session.md"
+
+    if [[ "$subcmd" == "update" ]]; then
+        # Update mode: regenerate session notes from current state
+        git fetch upstream 2>/dev/null || true
+
+        local tracking_head upstream_head behind=0
+        tracking_head=$(git rev-parse "$TRACKING_BRANCH" 2>/dev/null || echo "")
+        upstream_head=$(git rev-parse "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+        if [[ -n "$tracking_head" && -n "$upstream_head" && "$tracking_head" != "$upstream_head" ]]; then
+            behind=$(git rev-list --count "$TRACKING_BRANCH..upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo 0)
+        fi
+
+        local base="" patch_count=0
+        if base=$(patches_base 2>/dev/null); then
+            patch_count=$(git rev-list --count "$base..$PATCHES_BRANCH" 2>/dev/null || echo 0)
+        fi
+
+        local patch_list=""
+        if [[ "$patch_count" -gt 0 ]]; then
+            local index=1
+            while IFS= read -r hash; do
+                local subject files_count
+                subject=$(git log -1 --format="%s" "$hash")
+                files_count=$(git diff-tree --no-commit-id -r "$hash" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+                patch_list+="$(printf '%d. %s (%d file(s))' "$index" "$subject" "$files_count")"$'\n'
+                ((index++))
+            done <<< "$(git rev-list --reverse "$base..$PATCHES_BRANCH")"
+        fi
+        [[ -z "$patch_list" ]] && patch_list="(none)"
+
+        local last_sync_info=""
+        local last_sync_entry
+        last_sync_entry=$(git reflog show "$PATCHES_BRANCH" --format="%gd %gs %cr" 2>/dev/null | grep -i "rebase\|reset" | head -1 || true)
+        if [[ -n "$last_sync_entry" ]]; then
+            last_sync_info="$last_sync_entry"
+        else
+            local last_commit_date
+            last_commit_date=$(git log -1 --format="%cr" "$PATCHES_BRANCH" 2>/dev/null || echo "unknown")
+            last_sync_info="Last patches commit: $last_commit_date"
+        fi
+
+        local rerere_count=0
+        rerere_count=$(find .git/rr-cache -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ' || true)
+
+        mkdir -p .bingo
+        cat > "$session_file" << SESSIONEOF
+# bingo-light session notes
+Updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+## Upstream
+- URL: $UPSTREAM_URL
+- Branch: $UPSTREAM_BRANCH
+- Behind: $behind commits
+
+## Patch Stack ($patch_count patches)
+$patch_list
+## Last Sync
+$last_sync_info
+
+## Rerere
+$rerere_count recorded resolution(s)
+SESSIONEOF
+
+        if [[ "$JSON_MODE" == true ]]; then
+            local content
+            content=$(cat "$session_file" | json_escape)
+            json_out '{"ok":true,"updated":true,"session":"'"$content"'"}'
+        else
+            success "Session notes updated: $session_file"
+            cat "$session_file"
+        fi
+    else
+        # Read mode: return existing session notes
+        if [[ -f "$session_file" ]]; then
+            if [[ "$JSON_MODE" == true ]]; then
+                local content
+                content=$(cat "$session_file" | json_escape)
+                json_out '{"ok":true,"session":"'"$content"'"}'
+            else
+                cat "$session_file"
+            fi
+        else
+            if [[ "$JSON_MODE" == true ]]; then
+                json_out '{"ok":true,"session":"","message":"No session notes yet. Run bingo-light session update to create."}'
+            else
+                info "No session notes yet. Run 'bingo-light session update' to create."
+            fi
+        fi
+    fi
+}
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+show_help() {
+    cat << 'EOF'
+
+  bingo-light — AI-native fork maintenance tool.
+
+  Manages your customizations as a clean patch stack on top of upstream,
+  so syncing with upstream is always a one-command operation.
+
+EOF
+    echo -e "  ${BOLD}Usage:${RESET} bingo-light <command> [options]"
+    echo ""
+    echo -e "  ${BOLD}Setup:${RESET}"
+    echo -e "    ${CYAN}init${RESET} <upstream-url> [branch]   Initialize fork tracking"
+    echo ""
+    echo -e "  ${BOLD}Patch Management:${RESET}"
+    echo -e "    ${CYAN}patch new${RESET} <name>               Create a new patch"
+    echo -e "    ${CYAN}patch list${RESET} [-v]                 List all patches"
+    echo -e "    ${CYAN}patch show${RESET} <name|index>         Show patch diff"
+    echo -e "    ${CYAN}patch edit${RESET} <name|index>         Amend an existing patch"
+    echo -e "    ${CYAN}patch drop${RESET} <name|index>         Remove a patch"
+    echo -e "    ${CYAN}patch export${RESET} [dir]              Export patches as .patch files"
+    echo -e "    ${CYAN}patch import${RESET} <file|dir>         Import .patch files"
+    echo -e "    ${CYAN}patch reorder${RESET}                   Reorder patch stack"
+    echo -e "    ${CYAN}patch squash${RESET} <idx1> <idx2>       Merge two patches"
+    echo -e "    ${CYAN}patch meta${RESET} <name> [key] [val]   Get/set patch metadata"
+    echo ""
+    echo -e "  ${BOLD}Sync with Upstream:${RESET}"
+    echo -e "    ${CYAN}sync${RESET} [--dry-run] [--force] [--test]  Rebase patches onto latest upstream"
+    echo -e "    ${CYAN}smart-sync${RESET}                      One-shot sync: auto-resolves conflicts via rerere"
+    echo -e "    ${CYAN}undo${RESET}                            Undo last sync"
+    echo ""
+    echo -e "  ${BOLD}Monitoring:${RESET}"
+    echo -e "    ${CYAN}status${RESET}                          Health check & conflict prediction"
+    echo -e "    ${CYAN}doctor${RESET}                          Diagnose setup issues"
+    echo -e "    ${CYAN}diff${RESET}                            Show all changes vs upstream"
+    echo -e "    ${CYAN}log${RESET}                             Show sync history"
+    echo -e "    ${CYAN}conflict-analyze${RESET}                Analyze rebase conflicts (structured output)"
+    echo -e "    ${CYAN}history${RESET}                         Detailed sync history with hash mappings"
+    echo -e "    ${CYAN}session${RESET} [update]                 AI session notes (.bingo/session.md)"
+    echo ""
+    echo -e "  ${BOLD}Configuration:${RESET}"
+    echo -e "    ${CYAN}config${RESET} get|set|list             Manage configuration"
+    echo -e "    ${CYAN}test${RESET}                            Run configured test suite"
+    echo ""
+    echo -e "  ${BOLD}Automation:${RESET}"
+    echo -e "    ${CYAN}auto-sync${RESET}                       Generate GitHub Actions workflow"
+    echo ""
+    echo -e "  ${BOLD}Multi-repo:${RESET}"
+    echo -e "    ${CYAN}workspace${RESET} init|add|status|sync|list  Multi-repo management"
+    echo ""
+    echo -e "  ${BOLD}Quick Start:${RESET}"
+    echo ""
+    echo -e "    ${DIM}# 1. Fork a project on GitHub, clone your fork${RESET}"
+    echo -e "    git clone https://github.com/YOU/project.git"
+    echo -e "    cd project"
+    echo ""
+    echo -e "    ${DIM}# 2. Initialize bingo-light${RESET}"
+    echo -e "    bingo-light init https://github.com/ORIGINAL/project.git"
+    echo ""
+    echo -e "    ${DIM}# 3. Make changes and create patches${RESET}"
+    echo -e "    vim src/feature.py"
+    echo -e "    bingo-light patch new my-custom-feature"
+    echo ""
+    echo -e "    ${DIM}# 4. Later, sync with upstream${RESET}"
+    echo -e "    bingo-light sync"
+    echo ""
+    echo -e "  ${DIM}Version $VERSION${RESET}"
+}
+
+main() {
+    local cmd="${1:-}"
+    shift 2>/dev/null || true
+
+    case "$cmd" in
+        init)               cmd_init "$@" ;;
+        patch|p)            cmd_patch "$@" ;;
+        sync|s)             cmd_sync "$@" ;;
+        smart-sync)         cmd_smart_sync "$@" ;;
+        status|st)          cmd_status "$@" ;;
+        doctor)             cmd_doctor "$@" ;;
+        auto-sync)          cmd_autosync "$@" ;;
+        log)                cmd_log "$@" ;;
+        undo)               cmd_undo "$@" ;;
+        diff|d)             cmd_diff "$@" ;;
+        conflict-analyze)   cmd_conflict_analyze "$@" ;;
+        config)             cmd_config "$@" ;;
+        history)            cmd_history "$@" ;;
+        test)               cmd_test "$@" ;;
+        workspace|ws)       cmd_workspace "$@" ;;
+        session)            cmd_session "$@" ;;
+        version|-v|--version) echo "bingo-light $VERSION" ;;
+        help|-h|--help|"")    show_help ;;
+        *)          fatal "Unknown command: $cmd. Run 'bingo-light --help' for usage." ;;
+    esac
+}
+
+main "$@"
