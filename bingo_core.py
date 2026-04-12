@@ -727,7 +727,10 @@ class Repo:
                 ".bingolight is tracked by git. This is a security risk — "
                 "upstream may have injected it. Run: git rm --cached .bingolight"
             )
-        return self.config.load()
+        c = self.config.load()
+        # Auto-fix stale tracking branch (e.g. after manual conflict resolution)
+        self._fix_stale_tracking(c)
+        return c
 
     def _ensure_clean(self) -> None:
         """Raise DirtyTreeError if working tree is dirty."""
@@ -1105,7 +1108,6 @@ class Repo:
         Returns dict with recommended_action: up_to_date, sync_safe, sync_risky, resolve_conflict
         """
         c = self._load()
-        self._fix_stale_tracking(c)
 
         # Fetch upstream silently
         self.git.run_ok("fetch", "upstream")
@@ -1523,7 +1525,6 @@ class Repo:
     def _sync_locked(
         self, c: dict, dry_run: bool, force: bool, test: bool
     ) -> dict:
-        self._fix_stale_tracking(c)
         self._ensure_clean()
 
         # 1. Fetch upstream
@@ -1764,7 +1765,6 @@ class Repo:
             self.state.release_lock()
 
     def _smart_sync_locked(self, c: dict) -> dict:
-        self._fix_stale_tracking(c)
         self._ensure_clean()
 
         # Circuit breaker check (pre-fetch)
