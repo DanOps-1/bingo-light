@@ -10,7 +10,7 @@ _bingo_light() {
     local cur prev words cword
     _init_completion || return
 
-    local -r toplevel_commands="init patch sync status doctor auto-sync log undo diff version help conflict-analyze config history test workspace smart-sync session"
+    local -r toplevel_commands="init patch sync status doctor auto-sync log undo diff version help conflict-analyze conflict-resolve config history test workspace smart-sync session"
     local -r toplevel_aliases="p s st d ws"
     local -r all_toplevel="${toplevel_commands} ${toplevel_aliases}"
 
@@ -36,7 +36,7 @@ _bingo_light() {
             diff|d)
                 cmd="diff"
                 ;;
-            init|doctor|auto-sync|log|undo|version|help|conflict-analyze|config|history|test|workspace|ws|smart-sync|session)
+            init|doctor|auto-sync|log|undo|version|help|conflict-analyze|conflict-resolve|config|history|test|workspace|ws|smart-sync|session)
                 cmd="${words[i]}"
                 ;;
             *)
@@ -88,6 +88,16 @@ _bingo_light() {
     # Inside "diff" (or alias "d")
     if [[ "$cmd" == "diff" ]]; then
         COMPREPLY=( $(compgen -W "--help -h" -- "$cur") )
+        return
+    fi
+
+    # Inside "workspace" (or alias "ws") -- complete subcommands
+    if [[ "$cmd" == "workspace" || "$cmd" == "ws" ]]; then
+        if [[ -z "$subcmd" ]]; then
+            COMPREPLY=( $(compgen -W "init add remove list sync status" -- "$cur") )
+        else
+            COMPREPLY=( $(compgen -W "--help -h" -- "$cur") )
+        fi
         return
     fi
 

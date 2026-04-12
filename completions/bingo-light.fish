@@ -77,6 +77,7 @@ complete -c bingo-light -n __bingo_light_needs_command -a diff    -d 'Show diffe
 complete -c bingo-light -n __bingo_light_needs_command -a version -d 'Print version information'
 complete -c bingo-light -n __bingo_light_needs_command -a help    -d 'Show help for a command'
 complete -c bingo-light -n __bingo_light_needs_command -a conflict-analyze -d 'Analyze conflicts during rebase'
+complete -c bingo-light -n __bingo_light_needs_command -a conflict-resolve -d 'Resolve a conflict file and continue'
 complete -c bingo-light -n __bingo_light_needs_command -a config  -d 'Get/set/list configuration'
 complete -c bingo-light -n __bingo_light_needs_command -a history -d 'Show sync history with hash mappings'
 complete -c bingo-light -n __bingo_light_needs_command -a test    -d 'Run configured test suite'
@@ -118,8 +119,11 @@ complete -c bingo-light -n '__bingo_light_using_command log'       -s h -l help 
 complete -c bingo-light -n '__bingo_light_using_command undo'      -s h -l help -d 'Show help'
 complete -c bingo-light -n '__bingo_light_using_command version'   -s h -l help -d 'Show help'
 
+# ---- conflict-resolve flags ----
+complete -c bingo-light -n '__bingo_light_using_command conflict-resolve' -s h -l help -d 'Show help'
+
 # ---- help: complete with command names ----
-complete -c bingo-light -n '__bingo_light_using_command help' -a 'init patch sync status doctor auto-sync log undo diff version conflict-analyze config history test workspace smart-sync session' -d 'Command'
+complete -c bingo-light -n '__bingo_light_using_command help' -a 'init patch sync status doctor auto-sync log undo diff version conflict-analyze conflict-resolve config history test workspace smart-sync session' -d 'Command'
 
 # ---- patch subcommands (also alias "p") ----
 complete -c bingo-light -n __bingo_light_patch_needs_subcommand -a new     -d 'Create a new patch'
@@ -157,6 +161,30 @@ complete -c bingo-light -n '__bingo_light_patch_using_subcommand import'        
 complete -c bingo-light -n '__bingo_light_patch_using_subcommand reorder'           -s h -l help -d 'Show help'
 complete -c bingo-light -n '__bingo_light_patch_using_subcommand squash'            -s h -l help -d 'Show help'
 complete -c bingo-light -n '__bingo_light_patch_using_subcommand meta'              -s h -l help -d 'Show help'
+
+# ---- workspace subcommands (also alias "ws") ----
+
+# Returns true when we are inside "workspace" (or "ws") and need a workspace subcommand.
+function __bingo_light_workspace_needs_subcommand
+    set -l cmd (commandline -opc)
+    if test (count $cmd) -lt 2
+        return 1
+    end
+    if test "$cmd[2]" != workspace -a "$cmd[2]" != ws
+        return 1
+    end
+    if test (count $cmd) -eq 2
+        return 0
+    end
+    return 1
+end
+
+complete -c bingo-light -n __bingo_light_workspace_needs_subcommand -a init   -d 'Initialize workspace'
+complete -c bingo-light -n __bingo_light_workspace_needs_subcommand -a add    -d 'Add a repo to workspace'
+complete -c bingo-light -n __bingo_light_workspace_needs_subcommand -a remove -d 'Remove a repo from workspace'
+complete -c bingo-light -n __bingo_light_workspace_needs_subcommand -a list   -d 'List workspace repos'
+complete -c bingo-light -n __bingo_light_workspace_needs_subcommand -a sync   -d 'Sync all workspace repos'
+complete -c bingo-light -n __bingo_light_workspace_needs_subcommand -a status -d 'Show workspace status'
 
 # ---- New top-level command flags ----
 complete -c bingo-light -n '__bingo_light_using_command conflict-analyze' -s h -l help -d 'Show help'

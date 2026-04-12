@@ -21,6 +21,7 @@ _bingo-light() {
         'version:Print version information'
         'help:Show help for a command'
         'conflict-analyze:Analyze conflicts during rebase'
+        'conflict-resolve:Resolve a conflict file and continue'
         'config:Get/set/list configuration'
         'history:Show sync history with hash mappings'
         'test:Run configured test suite'
@@ -134,7 +135,26 @@ _bingo-light() {
                 diff|d)
                     _arguments $help_flag
                     ;;
-                init|doctor|auto-sync|log|undo|version|conflict-analyze|config|history|test|workspace|ws|smart-sync|session)
+                workspace|ws)
+                    local -a ws_subcommands=(
+                        'init:Initialize workspace'
+                        'add:Add a repo to workspace'
+                        'remove:Remove a repo from workspace'
+                        'list:List workspace repos'
+                        'sync:Sync all workspace repos'
+                        'status:Show workspace status'
+                    )
+                    _arguments -C \
+                        '(- *)'{-h,--help}'[Show help]' \
+                        '1:subcommand:->ws_subcmd' && return
+
+                    case $state in
+                        ws_subcmd)
+                            _describe -t subcommands 'workspace subcommand' ws_subcommands
+                            ;;
+                    esac
+                    ;;
+                init|doctor|auto-sync|log|undo|version|conflict-analyze|conflict-resolve|config|history|test|smart-sync|session)
                     _arguments $help_flag
                     ;;
                 help)

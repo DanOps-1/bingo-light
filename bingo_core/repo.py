@@ -2303,6 +2303,22 @@ jobs:
         data = self._load_workspace(workspace_config)
         return {"ok": True, "repos": data.get("repos", [])}
 
+    def workspace_remove(self, target: str) -> dict:
+        """Remove a repo from the workspace by alias or path."""
+        workspace_config = self._workspace_config_path()
+        if not os.path.isfile(workspace_config):
+            raise BingoError("No workspace. Run 'bingo-light workspace init'.")
+        data = self._load_workspace(workspace_config)
+        repos = data.get("repos", [])
+        original_count = len(repos)
+        repos = [r for r in repos if r.get("alias") != target and r.get("path") != target]
+        if len(repos) == original_count:
+            raise BingoError(f"Repo '{target}' not found in workspace.")
+        data["repos"] = repos
+        with open(workspace_config, "w") as f:
+            json.dump(data, f, indent=2)
+        return {"ok": True, "removed": target}
+
     def workspace_status(self) -> dict:
         """List workspace repos with per-repo sync status."""
         workspace_config = self._workspace_config_path()

@@ -183,8 +183,8 @@ def _format_diff(result: dict) -> str:
     return diff_text
 
 
-def _format_history(result: dict) -> str:
-    """Format history/log result."""
+def _format_log(result: dict) -> str:
+    """Format log result — compact one-line-per-sync."""
     syncs = result.get("syncs", result.get("history", result.get("entries", [])))
     if not syncs:
         return "No sync history."
@@ -202,6 +202,30 @@ def _format_history(result: dict) -> str:
             summary += f"  ({len(patches)} patch(es) rebased)"
         lines.append(f"  {_c(DIM, ts)}  {summary}")
     return "\n".join(lines)
+
+
+def _format_history(result: dict) -> str:
+    """Format history result — verbose with per-patch hash mappings."""
+    syncs = result.get("syncs", result.get("history", result.get("entries", [])))
+    if not syncs:
+        return "No sync history."
+    lines = []
+    for e in syncs:
+        ts = e.get("timestamp", "")
+        n = e.get("upstream_commits_integrated", 0)
+        before = e.get("upstream_before", "")[:7]
+        after = e.get("upstream_after", "")[:7]
+        patches = e.get("patches", [])
+        lines.append(f"  {_c(BOLD, 'Sync')} @ {ts}")
+        lines.append(f"    Upstream: {before} \u2192 {after} ({n} commit(s))")
+        if patches:
+            lines.append(f"    Patches rebased:")
+            for p in patches:
+                name = p.get("name", "?")
+                h = p.get("hash", "?")[:7]
+                lines.append(f"      {name}  {_c(DIM, h)}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def _format_conflict_analyze(result: dict) -> str:
@@ -468,6 +492,10 @@ def _format_patch_meta(result: dict) -> str:
     # Get single key
     k = result.get("key", "")
     v = result.get("value", "")
+    if isinstance(v, list):
+        v = ", ".join(v) if v else "(none)"
+    elif v is None or v == "":
+        v = "(not set)"
     return f"  {k}: {v}" if k else f"{_c(GREEN, 'OK')} Done."
 
 
@@ -551,7 +579,7 @@ def show_help() -> str:
     {cy}auto-sync{r}                       Generate GitHub Actions workflow
 
   {b}Multi-repo:{r}
-    {cy}workspace{r} init|add|status|sync|list  Multi-repo management
+    {cy}workspace{r} init|add|remove|status|sync|list  Multi-repo management
 
   {b}Quick Start:{r}
 
@@ -716,6 +744,9 @@ def build_parser() -> argparse.ArgumentParser:
     ws_sub.add_parser("sync", add_help=False)
     ws_sub.add_parser("status", add_help=False)
 
+    ws_remove = ws_sub.add_parser("remove", add_help=False)
+    ws_remove.add_argument("ws_target")
+
     # help
     sub.add_parser("help", add_help=False)
 
@@ -860,7 +891,7 @@ def _dispatch_workspace(args: argparse.Namespace, repo: Repo) -> dict:
     wcmd = args.ws_command
     if not wcmd:
         raise BingoError(
-            "workspace requires a subcommand: init, add, list, sync, status"
+            "workspace requires a subcommand: init, add, remove, list, sync, status"
         )
 
     if wcmd == "init":
@@ -881,6 +912,9 @@ def _dispatch_workspace(args: argparse.Namespace, repo: Repo) -> dict:
     if wcmd == "status":
         return repo.workspace_status()
 
+    if wcmd == "remove":
+        return repo.workspace_remove(args.ws_target)
+
     raise BingoError(f"Unknown workspace subcommand: {wcmd}")
 
 
@@ -895,7 +929,7 @@ _FORMATTERS: Dict[str, Any] = {
     "doctor": _format_doctor,
     "diff": _format_diff,
     "d": _format_diff,
-    "log": _format_history,
+    "log": _format_log,
     "history": _format_history,
     "conflict-analyze": _format_conflict_analyze,
     "conflict-resolve": _format_conflict_resolve,
