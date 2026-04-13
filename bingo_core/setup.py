@@ -151,37 +151,83 @@ def _get_tools() -> List[AITool]:
 # ─── MCP Server Path Detection ──────────────────────────────────────────────
 
 
+def _find_python_for_mcp() -> str:
+    """Find the correct python3 for running the MCP server.
+
+    When installed via pipx, system python3 can't import bingo_core.
+    We need to use the same python that runs bingo-light itself.
+    """
+    # Use the same python interpreter that's running this code
+    return sys.executable
+
+
 def find_mcp_server() -> Tuple[str, List[str]]:
     """Find the MCP server command and args.
 
-    Returns (command, args) tuple. Tries:
-    1. Installed `bingo-light-mcp` on PATH
-    2. mcp-server.py next to the running script
-    3. mcp-server.py next to bingo_core package
+    Returns (command, args) tuple.
     """
-    # 1. Installed binary on PATH
+    python = _find_python_for_mcp()
+
+    # 1. Installed binary on PATH (npm installs bingo-light-mcp)
     for name in ("bingo-light-mcp", "mcp-server.py"):
         mcp_bin = shutil.which(name)
         if mcp_bin:
-            return ("python3", [mcp_bin])
+            return (python, [mcp_bin])
 
     # 2. Relative to running script
     script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
     candidate = os.path.join(script_dir, "mcp-server.py")
     if os.path.isfile(candidate):
-        return ("python3", [candidate])
+        return (python, [candidate])
 
     # 3. Relative to bingo_core package
     pkg_dir = os.path.dirname(os.path.abspath(__file__))
     candidate = os.path.join(os.path.dirname(pkg_dir), "mcp-server.py")
     if os.path.isfile(candidate):
-        return ("python3", [candidate])
+        return (python, [candidate])
 
     # Fallback
-    return ("python3", ["bingo-light-mcp"])
+    return (python, ["bingo-light-mcp"])
 
 
 # ─── Config Writer ───────────────────────────────────────────────────────────
+
+
+def _configure_claude_code_via_cli(
+    command: str,
+    args: List[str],
+    server_name: str = "bingo-light",
+) -> Optional[Dict[str, Any]]:
+    """Try to configure Claude Code using `claude mcp add` CLI.
+
+    Returns result dict if successful, None if claude CLI not available.
+    """
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        return None
+
+    import subprocess
+    # Remove existing entry first (ignore errors if not present)
+    subprocess.run(
+        [claude_bin, "mcp", "remove", server_name],
+        capture_output=True, text=True,
+    )
+    # Add new entry: claude mcp add <name> -- <command> <args...>
+    cmd = [claude_bin, "mcp", "add", server_name, "--", command] + args
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        return {
+            "ok": True,
+            "tool": "claude-code",
+            "name": "Claude Code",
+            "config_path": "~/.claude.json (via claude mcp add)",
+            "action": "created",
+        }
+    return {
+        "ok": False,
+        "tool": "claude-code",
+        "error": result.stderr.strip() or "claude mcp add failed",
+    }
 
 
 def write_mcp_config(
@@ -194,6 +240,13 @@ def write_mcp_config(
 
     Returns dict with ok, tool, config_path, action (created|updated|error).
     """
+    # Claude Code: prefer `claude mcp add` CLI (writes to correct location)
+    if tool.id == "claude-code":
+        cli_result = _configure_claude_code_via_cli(command, args, server_name)
+        if cli_result:
+            return cli_result
+        # Fall through to JSON file method if claude CLI not available
+
     config_path = tool.expand_path()
     config_dir = os.path.dirname(config_path)
 
