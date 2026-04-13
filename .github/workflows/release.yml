@@ -54,7 +54,7 @@ jobs:
       # ── PyPI ──
       - name: Build Python package
         run: |
-          pip install build twine
+          pip install build "twine>=6"
           python3 -m build
 
       - name: Verify built package works

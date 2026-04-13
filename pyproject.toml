@@ -7,7 +7,7 @@ name = "bingo-light"
 dynamic = ["version"]
 description = "AI-native fork maintenance — manage customizations as a clean patch stack on top of upstream"
 readme = "README.md"
-license = "MIT"
+license = {text = "MIT"}
 requires-python = ">=3.8"
 authors = [
     { name = "bingo-light contributors" },
