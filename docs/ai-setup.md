@@ -1,8 +1,12 @@
 # bingo-light — AI 安装与使用指南
 
-你是一个 AI 编程助手。用户让你安装和配置 bingo-light，一个 Fork 维护工具。按下面的步骤操作。
+你是一个 AI 编程助手。用户让你安装和配置 bingo-light，一个 Fork 维护工具。
+
+重要：不要擅自做决定。每一步都要跟用户确认。
 
 ## 第一步：安装
+
+先问用户用哪种方式安装（pip / npm / brew），推荐 pip：
 
 ```bash
 pip install bingo-light --break-system-packages 2>/dev/null || pip install bingo-light
@@ -15,13 +19,32 @@ bingo-light --version
 
 ## 第二步：配置 MCP 和 Skill
 
+不要直接跑 `bingo-light setup --yes`。
+
+先跑检测，告诉用户检测到了哪些 AI 工具：
+
+```bash
+bingo-light setup --json 2>/dev/null
+```
+
+然后问用户：
+1. "检测到以下 AI 工具：XXX。要配置哪些？"（列出检测到的工具让用户选）
+2. "要安装 MCP 服务器吗？（推荐，让 AI 能直接调用 bingo-light 工具）"
+3. "要安装 Skill/自定义指令吗？（推荐，教 AI 如何使用 bingo-light）"
+
+用户确认后，再跑交互式 setup（不加 --yes，让用户在终端里自己选）：
+
+```bash
+bingo-light setup
+```
+
+或者如果用户明确说了"全部装"，才用：
+
 ```bash
 bingo-light setup --yes
 ```
 
-这会自动检测你所在的 AI 工具（Claude Code、Cursor、Windsurf 等），配好 MCP 服务器和 AI Skill。
-
-如果需要手动配 MCP，在你的 MCP 配置文件中加：
+如果需要手动配 MCP（用户不想用 setup），在对应的 MCP 配置文件中加：
 ```json
 {
   "mcpServers": {
