@@ -86,6 +86,12 @@ All of these are **enforced by CI** (`sync-check` job). Push will fail if any ar
 
 
 
+**Supported AI tools list** — when adding or removing a supported AI tool, update ALL of these:
+- `bingo_core/setup.py` — `_get_tools()` (MCP targets) + `_get_skill_targets()` (Skill targets)
+- `README.md` — AI 工具支持矩阵表 + 安装说明
+- `README.en.md` — mirror of above
+- `docs/ai-setup.md` — Step 0 tool list + Step 2 config path table + MCP config locations table
+
 **README.md ↔ README.en.md** — parallel documents. Structural changes must be mirrored: badges, features, comparison table, install methods, MCP tool table, project ecosystem.
 
 ## When adding a new command
@@ -94,8 +100,9 @@ All of these are **enforced by CI** (`sync-check` job). Push will fail if any ar
 2. `bingo-light` — add argparse + dispatch + **dedicated formatter** (not `_format_generic`)
 3. `completions/*.bash`, `.zsh`, `.fish` — add to ALL three completion files
 4. `docs/llms.txt` — add to command reference
-5. `README.md` + `README.en.md` — add to Command Reference
-6. Tests — add to `test.sh` or `test_core.py`
+5. `docs/ai-setup.md` — add to Command Reference section (AI-facing doc)
+6. `README.md` + `README.en.md` — add to Command Reference
+7. Tests — add to `test.sh` or `test_core.py`
 
 ## When adding a new MCP tool
 
