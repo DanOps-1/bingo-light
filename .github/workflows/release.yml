@@ -55,7 +55,8 @@ jobs:
       - name: Build Python package
         run: |
           pip install build
-          python3 -m build
+          python3 -m build --wheel
+          ls -la dist/
 
       - name: Verify built package works
         run: |
@@ -73,8 +74,6 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_TOKEN }}
-          packages-dir: dist/
-          skip-existing: true
 
       # ── npm ──
       - name: Verify npm package works
