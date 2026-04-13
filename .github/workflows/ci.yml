@@ -117,13 +117,12 @@ jobs:
           # README.md is the Chinese version (primary). Check required sections.
           FAIL=0
           require() { grep -q "^## $1" README.md || { echo "::error::README.md missing section: ## $1"; FAIL=1; }; }
-          require "快速开始"
           require "安装"
-          require "功能特性"
+          require "AI 如何使用 bingo-light"
           require "工作原理"
+          require "MCP 服务器"
           require "命令参考"
           require "常见问题"
-          require "为什么不用..."
           require "与其他方案对比"
           require "项目生态"
           require "参与贡献"
