@@ -54,7 +54,7 @@ jobs:
       # ── PyPI ──
       - name: Build Python package
         run: |
-          pip install build "twine>=6"
+          pip install build
           python3 -m build
 
       - name: Verify built package works
@@ -70,11 +70,10 @@ jobs:
           rm -rf /tmp/bl-verify
 
       - name: Publish to PyPI
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: python3 -m twine upload dist/*.whl dist/*.tar.gz
-        if: env.TWINE_PASSWORD != ''
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_TOKEN }}
+        if: ${{ secrets.PYPI_TOKEN != '' }}
 
       # ── npm ──
       - name: Verify npm package works
