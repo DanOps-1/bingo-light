@@ -92,29 +92,54 @@ Expected: `bingo-light 2.1.1` or newer. If command not found, check PATH.
 
 **If user answered NO to both question 2 and 3, skip this step entirely.**
 
-Run this command:
+#### 2a. Run setup
+
 ```bash
 bingo-light setup --yes --json 2>/dev/null
 ```
 
-This automatically detects installed AI tools and configures MCP + Skills for all of them.
+Parse the JSON output. Check the `"configured"` array (MCP tools) and `"skills"` array (installed skills).
 
-Parse the JSON output and tell the user what was configured:
+#### 2b. Verify MCP configured
+
+If `"configured"` is empty or doesn't include the user's AI tool, something went wrong. Tell the user and try manual config (see bottom of this section).
+
+#### 2c. Verify Skills installed
+
+If `"skills"` is empty but user wanted skills (answer 3a), the skill file may be missing from this version. Install it manually:
+
+```bash
+# Download skill file
+curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/.claude/commands/bingo.md -o /tmp/bingo-skill.md
+
+# Install to Claude Code (if applicable)
+mkdir -p ~/.claude/commands && cp /tmp/bingo-skill.md ~/.claude/commands/bingo.md
+
+# Install to other tools if needed:
+# Windsurf:  append to ~/.codeium/windsurf/memories/global_rules.md
+# Continue:  cp to ~/.continue/rules/bingo.md
+# Cline:     cp to ~/Documents/Cline/Rules/bingo.md
+# Roo Code:  cp to ~/.roo/rules/bingo.md
+# Gemini:    append to ~/.gemini/GEMINI.md
+
+rm /tmp/bingo-skill.md
 ```
-配置完成！已配好以下工具：
-- MCP: [list configured tools from JSON output]
-- Skills: [list installed skills from JSON output]
+
+#### 2d. Report to user
+
+```
+配置完成！
+- MCP: [list from "configured" array, e.g. "Claude Code, Cursor"]
+- Skills: [list from "skills" array, or "已手动安装" if you did 2c]
 
 请重启你的 AI 工具 session 以加载 MCP 服务器。
 ```
 
-**If user answered YES to MCP (2a) but NO to Skills (3b):** run `bingo-light setup --yes --no-completions --json 2>/dev/null`
-
-**WARNING — common mistakes to avoid:**
-- `bingo-light mcp-server` ← THIS COMMAND DOES NOT EXIST. Do not run it.
-- `{"command": "bingo-light", "args": ["mcp-server"]}` ← WRONG MCP config. Do not write this.
-- Do not manually edit any MCP config file. `bingo-light setup` handles everything.
-- The MCP server binary is called `bingo-light-mcp`, NOT `bingo-light mcp-server`.
+#### Common mistakes — DO NOT do these:
+- `bingo-light mcp-server` ← THIS COMMAND DOES NOT EXIST
+- `{"command": "bingo-light", "args": ["mcp-server"]}` ← WRONG
+- Do not manually edit any MCP config file unless setup fails
+- The MCP binary is `bingo-light-mcp`, NOT `bingo-light mcp-server`
 
 ---
 
