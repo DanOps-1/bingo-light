@@ -131,6 +131,13 @@ jobs:
           [ "$FAIL" = "0" ] || exit 1
           echo "All required zh-CN sections present"
 
+      - name: Skill file sync check
+        run: |
+          diff -q .claude/commands/bingo.md bingo_core/_skill.md || {
+            echo "::error::bingo_core/_skill.md is out of sync with .claude/commands/bingo.md — run: cp .claude/commands/bingo.md bingo_core/_skill.md"
+            exit 1
+          }
+
       - name: bingo-light importability
         run: |
           python3 -c "

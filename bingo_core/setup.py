@@ -594,17 +594,20 @@ def _get_skill_targets() -> List[SkillTarget]:
 
 def find_skill_file() -> Optional[str]:
     """Find the bingo.md skill file in common locations."""
-    candidates = []
-
-    script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-    candidates.append(os.path.join(script_dir, ".claude", "commands", "bingo.md"))
-
     pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
     repo_dir = os.path.dirname(pkg_dir)
-    candidates.append(os.path.join(repo_dir, ".claude", "commands", "bingo.md"))
 
-    # npm package layout
-    candidates.append(os.path.join(script_dir, "..", ".claude", "commands", "bingo.md"))
+    candidates = [
+        # Bundled inside bingo_core/ (pip/npm installs)
+        os.path.join(pkg_dir, "_skill.md"),
+        # Repo layout
+        os.path.join(repo_dir, ".claude", "commands", "bingo.md"),
+        # Script-relative (install.sh)
+        os.path.join(script_dir, ".claude", "commands", "bingo.md"),
+        # npm package layout
+        os.path.join(script_dir, "..", ".claude", "commands", "bingo.md"),
+    ]
 
     for c in candidates:
         if os.path.isfile(c):

@@ -34,3 +34,6 @@ version = {attr = "bingo_core.VERSION"}
 
 [tool.setuptools.packages.find]
 include = ["bingo_core*"]
+
+[tool.setuptools.package-data]
+bingo_core = ["_skill.md"]
