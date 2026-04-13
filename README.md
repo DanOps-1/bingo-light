@@ -2,7 +2,7 @@
   <br>
   <img src="docs/logo.svg" alt="bingo-light logo" width="200">
   <br><br>
-  <strong>Fork 同步，一条命令搞定。<br>人用、AI 用，零依赖。</strong>
+  <strong>让 AI 接管你的 Fork 维护。<br>同步、冲突、补丁管理 — 全自动。</strong>
   <br><br>
   <a href="README.en.md">English</a> | <b>简体中文</b>
   <br><br>
@@ -16,24 +16,29 @@
   <br><br>
 </p>
 
-GitHub 的 "Sync fork" 按钮？你一改代码它就废了。手动 `git rebase`？六步操作，每次都得记。AI 想帮你同步？没接口可调。
+Fork 维护是个苦差事 — 上游一更新，你的定制化改动就得手动 rebase。GitHub 的 "Sync fork" 按钮碰到自定义 commit 直接废了。手动操作六步起步，冲突反复解，搞砸了还得从 reflog 里捞。
 
-**bingo-light 把这三个问题一锅端。**
+**装完 bingo-light，跟你的 AI 说一句"帮我同步 Fork"，剩下的它全搞定。**
 
-改动以补丁栈的形式叠在上游之上，干干净净。同步一句 `bingo-light sync`。冲突解过一次就记住了，下次自动跳过。搞砸了 `bingo-light undo` 秒回。
+内置 MCP 服务器 29 个工具，AI 自主完成：拉上游、rebase 补丁、分析冲突、写合并代码、继续 rebase。冲突解过一次自动记住（rerere），下次不再问。搞砸了 `undo` 秒回。
 
-所有命令支持 `--json` 输出。内置 MCP 服务器 29 个工具，AI 从初始化到冲突解决全程自主，不用人盯。
+> [!TIP]
+> **不想读文档？** 把这段丢给你的 AI，让它帮你装：
+>
+> ```
+> 帮我安装 bingo-light 并配置好 MCP，参考：
+> https://raw.githubusercontent.com/DanOps-1/bingo-light/main/README.md
+> ```
 
 ---
 
 ## 目录
 
-- [快速开始](#快速开始)
-- [演示](#演示)
 - [安装](#安装)
+- [演示](#演示)
 - [功能特性](#功能特性)
+- [MCP 服务器（29 工具）](#mcp-服务器)
 - [工作原理](#工作原理)
-- [MCP 服务器](#mcp-服务器)
 - [命令参考](#命令参考)
 - [集成指南](#集成指南)
 - [配置](#配置)
@@ -41,30 +46,54 @@ GitHub 的 "Sync fork" 按钮？你一改代码它就废了。手动 `git rebase
 - [与其他方案对比](#与其他方案对比)
 - [项目生态](#项目生态)
 - [参与贡献](#参与贡献)
-- [许可证](#许可证)
 
 ---
 
-## 快速开始
+## 安装
 
-```console
-$ pip install bingo-light && bingo-light setup
+### 让 AI 帮你装（推荐）
+
+把下面这段丢给你的 AI（Claude Code、Cursor、Windsurf 等），它会自动装好并配好 MCP：
+
+```
+帮我安装并配置 bingo-light：pip install bingo-light && bingo-light setup --yes
 ```
 
-```console
-$ cd my-forked-project
-$ bingo-light init https://github.com/original/project.git
-✓ Tracking original/project.git (branch: main)
+### 自己装
 
-$ bingo-light patch new my-feature
-✓ Patch 'my-feature' created
+| 方式 | 命令 |
+|------|------|
+| **pip** | `pip install bingo-light && bingo-light setup` |
+| **npm** | `npm install -g bingo-light && bingo-light setup` |
+| **npx** | `npx bingo-light setup` |
+| **Homebrew** | `brew install DanOps-1/tap/bingo-light && bingo-light setup` |
 
-$ bingo-light sync
-✓ 12 commit(s) integrated, 1 patch(es) rebased
+<details>
+<summary><b>更多安装方式</b>（Docker / Shell / 源码）</summary>
+
+**Docker**
+```bash
+docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/danops-1/bingo-light status
+docker run --rm -i -v "$PWD:/repo" -w /repo ghcr.io/danops-1/bingo-light mcp-server.py
 ```
 
-> [!TIP]
-> 所有命令加 `--json` 输出结构化数据，加 `--yes` 跳过确认。AI 和脚本直接消费。
+**Shell 一键安装**
+```bash
+curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/install.sh | sh
+```
+
+**从源码**
+```bash
+git clone https://github.com/DanOps-1/bingo-light.git
+cd bingo-light && make install && bingo-light setup
+```
+
+</details>
+
+> [!NOTE]
+> **依赖：** Python 3.8+ / git 2.20+，没了。零 pip 依赖。
+>
+> MCP 客户端可直接用 npx：`{"command": "npx", "args": ["-y", "bingo-light-mcp"]}`
 
 ---
 
@@ -189,69 +218,71 @@ $ bingo-light setup
 > [!TIP]
 > 支持 10 个 AI 工具的 MCP 配置 + 6 个平台的 Skill 安装。方向键多选，一次配完。
 
-## 安装
+## AI 如何使用 bingo-light
 
-装完跑 `bingo-light setup`，交互式配好 MCP + Skill。
+这才是重点。bingo-light 是为 AI agent 设计的 Fork 维护工具。
 
-| 方式 | 命令 |
-|------|------|
-| **pip** | `pip install bingo-light && bingo-light setup` |
-| **npm** | `npm install -g bingo-light && bingo-light setup` |
-| **npx** | `npx bingo-light setup` |
-| **Homebrew** | `brew install DanOps-1/tap/bingo-light && bingo-light setup` |
+### AI 拿到什么
+
+|  | 能力 | 说明 |
+|---|------|------|
+| 🔌 | **MCP 服务器** | 29 个工具，AI 直接调用，从 init 到冲突解决全链路 |
+| 📊 | **结构化输出** | 所有命令 `--json` 输出，AI 直接 parse |
+| 🤖 | **零交互** | `--yes` + 非 TTY 自适应，不会卡在确认提示 |
+| 🔍 | **冲突分析** | `conflict-analyze` 返回双方代码 + AI 可执行的解决提示 |
+| ✏️ | **冲突解决** | `conflict-resolve` 直接写入合并代码，自动 stage + 继续 rebase |
+| 🧠 | **冲突记忆** | rerere 自动记住解法，同样冲突不用 AI 再解第二次 |
+| 📋 | **Skill / 指令** | `/bingo` 教 AI 整套工作流，不用你写 prompt |
+| 🔄 | **Advisor 代理** | `contrib/agent.py` 后台监控漂移，安全时自动同步 |
+
+### AI 实际工作流
+
+你说一句 **"同步上游"**，AI 自己跑完整个流程：
+
+```
+bingo_status()            → 落后 47 commit，risk: core.c
+bingo_sync(dry_run=true)  → 预判 1 个冲突
+bingo_sync()              → rebase 卡在冲突
+bingo_conflict_analyze()  → 拿到 ours/theirs + hint
+  → AI 读两边代码，写合并结果
+bingo_conflict_resolve()  → 写入、stage、rebase 继续
+bingo_status()            → 0 落后，补丁干净 ✓
+```
+
+> [!IMPORTANT]
+> **你不需要理解 rebase、rerere、tracking branch 这些概念。** AI 全部处理。你只需要装好工具，告诉 AI 你想干嘛。
+
+### 支持哪些 AI 工具
+
+`bingo-light setup` 一键配好 MCP + Skill：
+
+| AI 工具 | MCP | Skill |
+|---------|:---:|:-----:|
+| Claude Code | ✅ | ✅ |
+| Cursor | ✅ | — |
+| Windsurf | ✅ | ✅ |
+| VS Code / Copilot | ✅ | — |
+| Cline | ✅ | ✅ |
+| Roo Code | ✅ | ✅ |
+| Zed | ✅ | — |
+| Gemini CLI | ✅ | ✅ |
+| Continue | — | ✅ |
+| Amazon Q | ✅ | — |
+
+---
+
+## 人也能用
+
+不用 AI 也完全没问题。同一套命令，人跑和 AI 跑效果一样。
 
 <details>
-<summary><b>更多安装方式</b>（Docker / Shell / 源码）</summary>
-
-**Docker**
-```bash
-docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/danops-1/bingo-light status
-docker run --rm -i -v "$PWD:/repo" -w /repo ghcr.io/danops-1/bingo-light mcp-server.py
-```
-
-**Shell 一键安装**
-```bash
-curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/install.sh | sh
-# CI / Docker: curl -fsSL .../install.sh | sh -s -- --yes
-```
-
-**从源码**
-```bash
-git clone https://github.com/DanOps-1/bingo-light.git
-cd bingo-light && make install && bingo-light setup
-```
-
-</details>
-
-> [!NOTE]
-> **依赖：** Python 3.8+ / git 2.20+，没了。零 pip 依赖。
->
-> MCP 客户端可直接用 npx：`{"command": "npx", "args": ["-y", "bingo-light-mcp"]}`
-
-## 功能特性
-
-### AI 侧
+<summary><b>人类功能一览</b></summary>
 
 | 功能 | 说明 |
 |------|------|
-| **MCP 服务器** | 29 个工具，初始化到冲突解决全覆盖 |
-| **`--json`** | 所有命令输出结构化 JSON |
-| **`--yes`** | 跳过一切确认，不需要 TTY |
-| **非 TTY 自适应** | 管道或子进程调用时自动静默 |
-| **`BINGO_DESCRIPTION`** | 环境变量设补丁描述 |
-| **`conflict-analyze`** | 冲突数据结构化：文件、双方代码、解决提示 |
-| **`conflict-resolve`** | MCP 直接写入解决内容，自动暂存 + 继续 rebase |
-| **Advisor 代理** | `contrib/agent.py` 自动监控、分析、安全时自动同步 |
-
-### 人类侧
-
-| 功能 | 说明 |
-|------|------|
-| **零依赖** | Python 3 + git，一行装完 |
-| **命名补丁** | 每个改动是独立的、有名字的 commit |
 | **一键同步** | `bingo-light sync`，补丁自动 rebase 到最新上游 |
+| **命名补丁** | 每个改动是独立的、有名字的 commit |
 | **先试后跑** | `sync --dry-run` 临时分支预演，不碰真代码 |
-| **冲突记忆** | rerere 自动开，解一次就记住，再也不问 |
 | **秒级撤销** | `bingo-light undo` 恢复同步前状态 |
 | **冲突预警** | `status` 提前告诉你哪些文件会出事 |
 | **自检修复** | `doctor` 全面体检 + 试跑 rebase |
@@ -261,8 +292,9 @@ cd bingo-light && make install && bingo-light setup
 | **多仓管理** | `workspace` 统一管所有 Fork |
 | **补全** | bash / zsh / fish |
 | **通知推送** | Discord、Slack、Webhook，事件触发 |
-| **补丁元数据** | 标签、原因、过期时间、关联上游 PR |
 | **测试联动** | 同步后自动跑测试，挂了自动回滚 |
+
+</details>
 
 ## 工作原理
 
