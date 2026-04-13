@@ -73,7 +73,6 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_TOKEN }}
-        if: ${{ secrets.PYPI_TOKEN != '' }}
 
       # ── npm ──
       - name: Verify npm package works
