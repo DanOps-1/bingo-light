@@ -56,6 +56,7 @@ jobs:
         run: |
           pip install build
           python3 -m build --wheel
+          rm -f dist/*.tar.gz
           ls -la dist/
 
       - name: Verify built package works
