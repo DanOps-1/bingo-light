@@ -16,171 +16,136 @@ pip install bingo-light
 bingo-light setup
 ```
 
+---
+
 ## For LLM Agents
 
-> **IMPORTANT: Use `curl` to fetch this file, NOT WebFetch.** WebFetch may summarize content and lose critical details.
->
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/docs/ai-setup.md
-> ```
+YOU MUST FOLLOW THESE STEPS IN ORDER. DO NOT SKIP STEP 0.
 
-If you're an LLM Agent helping a user set up bingo-light, follow these steps exactly. **Do not skip steps. Do not auto-install without asking.**
+DO NOT try to manually write MCP config JSON. Use `bingo-light setup` instead.
 
 ---
 
-### Step 0: Ask the user
+### Step 0: ASK THE USER FIRST
 
-Before doing anything, ask these questions:
+**STOP. Do NOT install anything yet.** Ask the user these questions and wait for answers:
 
-1. **How do you want to install?** (recommend pip)
-   - `pip install bingo-light` (recommended)
-   - `npm install -g bingo-light`
-   - `brew install DanOps-1/tap/bingo-light`
+1. **How do you want to install?** (recommend pip, but ask)
+   - pip (recommended)
+   - npm
+   - brew
 
-2. **Which AI tools do you use?** (list all that apply)
-   - Claude Code
-   - Cursor
-   - Windsurf
-   - VS Code / GitHub Copilot
-   - Cline
-   - Roo Code
-   - Zed
-   - Gemini CLI
-   - Continue
-   - Amazon Q Developer
-   - Other / None
+2. **Do you want MCP configured?** (recommend yes — lets you call bingo-light tools directly)
 
-3. **Do you want MCP server configured?** (recommended: yes)
-   - MCP lets your AI call bingo-light tools directly (sync, patch, conflict-resolve, etc.)
-   - Without MCP, the AI can still use CLI commands with `--json --yes`
+3. **Do you want AI Skills installed?** (recommend yes — teaches you the bingo-light workflow)
 
-4. **Do you want AI Skills/Instructions installed?** (recommended: yes)
-   - Skills teach the AI how to use bingo-light effectively
-   - Available for: Claude Code, Windsurf, Continue, Cline, Roo Code, Gemini CLI
+4. **Do you have a forked repo to initialize?** If yes, get the upstream URL.
 
-5. **Do you have a forked repo to set up now?** If yes, get the upstream URL.
-
-Wait for answers before proceeding.
+**DO NOT proceed until the user answers.** If the user says "just do it all", that counts as answering.
 
 ---
 
 ### Step 1: Install
 
-Based on user's choice:
+Run ONE of these based on the user's choice:
 
 ```bash
-# pip (recommended)
-pip install bingo-light
-
-# npm
-npm install -g bingo-light
-
-# brew
-brew install DanOps-1/tap/bingo-light
+pip install bingo-light                    # pip (recommended)
+npm install -g bingo-light                 # npm
+brew install DanOps-1/tap/bingo-light      # brew
 ```
 
-Verify:
+Verify installation:
 ```bash
 bingo-light --version
 ```
 
-If this fails, check PATH and try `pip install --user bingo-light` or `pipx install bingo-light`.
+Expected output: `bingo-light 2.1.1` (or newer)
+
+If command not found, try: `pip install --user bingo-light` or `pipx install bingo-light`, then check PATH.
 
 ---
 
 ### Step 2: Configure MCP + Skills
 
-**Only if the user said yes to MCP and/or Skills.**
+**CRITICAL: Use `bingo-light setup`. Do NOT manually edit MCP config files.**
 
-Option A: Interactive setup (let user pick in terminal):
+The `setup` command automatically detects installed AI tools, finds the correct MCP server binary, writes the correct config format for each tool, and installs Skills. Manual config is error-prone (wrong binary path, wrong args, wrong config format).
+
+If user wants to pick which tools to configure (interactive):
 ```bash
 bingo-light setup
 ```
 
-Option B: If user explicitly told you which tools to configure, you can use `--yes` to auto-configure all detected tools:
+If user said "configure everything" or "just do it":
 ```bash
 bingo-light setup --yes
 ```
 
-Option C: Manual MCP config (if user doesn't want to use setup):
+**After setup, verify MCP is working** by restarting your AI tool session and checking that bingo-light tools are available.
 
-Add to the AI tool's MCP config file:
+**DO NOT do any of the following:**
+- Do NOT run `bingo-light mcp-server` (this command does not exist)
+- Do NOT write `{"command": "bingo-light", "args": ["mcp-server"]}` (wrong)
+- Do NOT guess the MCP binary path — `bingo-light setup` handles this
+- Do NOT manually edit `settings.json`, `.mcp.json`, or any MCP config file unless `bingo-light setup` is broken
+
+If `bingo-light setup` fails or the user insists on manual config, the correct MCP entry is:
+
 ```json
 {
   "mcpServers": {
     "bingo-light": {
-      "command": "python3",
-      "args": ["/path/to/bingo-light-mcp"]
+      "command": "bingo-light-mcp",
+      "args": []
     }
   }
 }
 ```
 
-Find the MCP server path:
-```bash
-which bingo-light-mcp || which mcp-server.py
-```
+Note: The MCP server command is `bingo-light-mcp` (a separate binary), NOT `bingo-light mcp-server` (not a subcommand).
 
-Config file locations:
-| AI Tool | MCP Config Path |
-|---------|----------------|
-| Claude Code | `~/.claude/settings.json` |
-| Claude Desktop (macOS) | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| Cursor | `~/.cursor/mcp.json` |
-| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
-| VS Code / Copilot | `.vscode/mcp.json` (key: `"servers"`, needs `"type": "stdio"`) |
-| Cline | `~/.vscode/cline_mcp_settings.json` |
-| Roo Code | `~/.vscode/roo_mcp_settings.json` |
-| Zed | `~/.config/zed/settings.json` (key: `"context_servers"`) |
-| Gemini CLI | `~/.gemini/settings.json` |
-| Amazon Q | `~/.aws/amazonq/mcp.json` |
+If `bingo-light-mcp` is not found on PATH, find its full path:
+```bash
+which bingo-light-mcp 2>/dev/null || find /usr -name bingo-light-mcp 2>/dev/null || find ~/.local -name bingo-light-mcp 2>/dev/null || find ~/.nvm -name bingo-light-mcp 2>/dev/null
+```
 
 ---
 
 ### Step 3: Initialize a Fork (if applicable)
 
-Only if the user has a forked repo ready:
+Only if the user has a forked repo and gave you the upstream URL:
 
 ```bash
 cd /path/to/forked-project
 bingo-light init <upstream-url> --json --yes
 ```
 
-Example:
-```bash
-bingo-light init https://github.com/original/project.git --json --yes
-```
-
 ---
 
-### Step 4: Verify everything works
+### Step 4: Verify
 
 ```bash
 bingo-light --version
-bingo-light setup --json 2>/dev/null | head -1
 ```
 
 If a fork was initialized:
 ```bash
 bingo-light status --json --yes
-bingo-light doctor --json --yes
 ```
 
-Tell the user the results. If anything failed, diagnose and fix.
+Tell the user the results. If MCP was configured, ask them to test with `/mcp` or equivalent in their AI tool.
 
 ---
 
-### Step 5: Teach the user
+### Step 5: Tell the user what they can do now
 
-Tell the user:
-
-> bingo-light is ready! Here's how to use it:
+> bingo-light is ready! Here's what you can do:
 >
-> - **Sync your fork:** Tell me "sync upstream" or run `bingo-light sync`
-> - **Create a patch:** Make changes, then tell me "create a patch called feature-x"
-> - **Check status:** Tell me "check my fork" or run `bingo-light status`
-> - **If I have MCP configured:** I can do all of this automatically through tool calls
-> - **Run `bingo-light setup` again anytime** to reconfigure
+> - **"Sync my fork"** — I'll pull upstream changes and rebase your patches
+> - **"Create a patch called X"** — I'll turn your changes into a named patch
+> - **"Check my fork status"** — I'll show drift, patches, and conflict risk
+> - **Run `bingo-light setup` again** anytime to reconfigure MCP/Skills
 
 ---
 
@@ -188,63 +153,50 @@ Tell the user:
 
 After everything works, ask:
 
-> "If bingo-light is useful, would you like to star the repo? It helps the project grow."
+> "If bingo-light is useful, would you mind starring the repo?"
 
-Only if the user says yes:
+Only if the user explicitly says yes:
 ```bash
 gh api --silent --method PUT /user/starred/DanOps-1/bingo-light 2>/dev/null || true
 ```
-
-**Never run this without explicit user consent.**
 
 ---
 
 ## Command Reference (for daily use after setup)
 
-Once installed, use these commands with `--json --yes` for structured output:
+Use `--json --yes` for all programmatic calls.
 
 ### Core workflow
 
-1. **Always start with status:**
 ```bash
-bingo-light status --json --yes
-```
-Returns `recommended_action`: `up_to_date` / `sync_safe` / `sync_risky` / `resolve_conflict`
-
-2. **Sync upstream** (use smart-sync, handles everything):
-```bash
-bingo-light smart-sync --json --yes
+bingo-light status --json --yes          # ALWAYS start here. Check recommended_action.
+bingo-light smart-sync --json --yes      # Sync upstream (preferred, handles everything)
+bingo-light conflict-analyze --json      # When rebase is stuck: get ours/theirs/hint
+bingo-light undo --json --yes            # Revert last sync
 ```
 
-3. **Conflict analysis** (when rebase is stuck):
-```bash
-bingo-light conflict-analyze --json
-```
-Returns `ours` (upstream), `theirs` (your patch), `hint` (resolution strategy) per file.
+`recommended_action` values: `up_to_date` / `sync_safe` / `sync_risky` / `resolve_conflict`
 
-4. **Resolve conflicts:**
+### Conflict resolution
+
 ```bash
-# Read the file, write merged version, then:
+bingo-light conflict-analyze --json      # Get structured conflict data
+# Read hint, read file, write merged version, then:
 git add <file>
 git rebase --continue
-```
-
-5. **Undo** (if sync went wrong):
-```bash
-bingo-light undo --json --yes
+# Do NOT run bingo-light sync after resolving — rebase --continue is enough
 ```
 
 ### Patch management
 
 ```bash
-BINGO_DESCRIPTION="description" bingo-light patch new <name> --json --yes
+BINGO_DESCRIPTION="desc" bingo-light patch new <name> --json --yes
 bingo-light patch list --json --yes
 bingo-light patch show <name|index> --json --yes
 bingo-light patch drop <name|index> --json --yes
 bingo-light patch edit <name|index> --json --yes    # git add first
 bingo-light patch reorder --order "3,1,2" --json --yes
 bingo-light patch squash <idx1> <idx2> --json --yes
-bingo-light patch meta <name> [key] [value] --json --yes
 ```
 
 ### Diagnostics
@@ -257,14 +209,18 @@ bingo-light history --json --yes
 
 ## Rules
 
-1. **Always use `--json --yes`** when calling commands programmatically
-2. **Always check `recommended_action`** from status before deciding what to do
-3. **Read `hint`** from conflict-analyze — it tells you the resolution strategy
-4. **After resolving conflicts:** `git add` then `git rebase --continue`, NOT `bingo-light sync`
-5. **`BINGO_DESCRIPTION` env var** sets patch description (required for `patch new`)
-6. **Patch names:** alphanumeric + hyphens + underscores only
-7. **rerere** auto-remembers conflict resolutions — same conflict won't need solving twice
+1. **Always `--json --yes`** for programmatic calls
+2. **Always check `recommended_action`** before syncing
+3. **Read `hint`** from conflict-analyze for resolution strategy
+4. **After conflicts:** `git add` + `git rebase --continue`, NOT `bingo-light sync`
+5. **`BINGO_DESCRIPTION` env var** for patch descriptions
+6. **Patch names:** `[a-zA-Z0-9][a-zA-Z0-9_-]*` only
+7. **rerere** auto-remembers resolutions — same conflict won't recur
 
-## Warning
+## DO NOT
 
-**Do not change user's config files, install to tools, or run destructive commands without explicit user consent.** Always ask first. Recommend, don't force.
+- Do NOT install to AI tools without asking the user first
+- Do NOT manually write MCP config — use `bingo-light setup`
+- Do NOT run `bingo-light mcp-server` — this command does not exist
+- Do NOT guess binary paths — use `which` or let `setup` handle it
+- Do NOT change user config files without explicit consent
