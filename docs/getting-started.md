@@ -85,7 +85,7 @@ Add to `~/.claude/settings.json` or `.mcp.json`:
 }
 ```
 
-29 MCP tools are available. See the [README](../README.md#for-ai-agents) for the full list.
+35 MCP tools are available. See the [README](../README.md#for-ai-agents) for the full list.
 
 ## Next steps
 
