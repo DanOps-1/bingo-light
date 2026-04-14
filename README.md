@@ -234,6 +234,7 @@ $ bingo-light setup
 | ✏️ | **冲突解决** | `conflict-resolve` 直接写入合并代码，自动 stage + 继续 rebase |
 | 🧠 | **冲突记忆** | rerere 自动记住解法，同样冲突不用 AI 再解第二次 |
 | 📋 | **Skill / 指令** | `/bingo` 教 AI 整套工作流，不用你写 prompt |
+| 📦 | **依赖补丁** | `dep patch/apply/sync` — npm/pip 包改了不怕 install 覆盖 |
 | 🔄 | **Advisor 代理** | `contrib/agent.py` 后台监控漂移，安全时自动同步 |
 
 ### AI 实际工作流
@@ -415,6 +416,12 @@ bingo-light conflict-analyze                 分析 rebase 冲突
 bingo-light config get|set|list [key] [val]  管理配置
 bingo-light history                          详细同步历史 + 映射
 bingo-light test                             运行测试套件
+bingo-light dep patch <package> [name]        补丁 npm/pip 依赖
+bingo-light dep apply [package]              重新应用依赖补丁
+bingo-light dep sync                         更新后重新应用 + 冲突检测
+bingo-light dep status                       依赖补丁健康状态
+bingo-light dep list                         列出所有依赖补丁
+bingo-light dep drop <package> [patch]       删除依赖补丁
 bingo-light workspace init|add|status|sync   多仓库管理
 bingo-light auto-sync                        生成 GitHub Actions 工作流
 bingo-light version                          打印版本

@@ -11,6 +11,7 @@ _bingo-light() {
     local -a toplevel_commands=(
         'init:Initialize a new bingo-light project'
         'patch:Manage patches'
+        'dep:Patch npm/pip dependencies'
         'setup:Configure MCP for AI tools (interactive)'
         'sync:Synchronize changes with upstream'
         'status:Show current status'
@@ -135,6 +136,25 @@ _bingo-light() {
                     ;;
                 diff|d)
                     _arguments $help_flag
+                    ;;
+                dep)
+                    local -a dep_subcommands=(
+                        'patch:Patch a modified dependency'
+                        'apply:Re-apply patches after install'
+                        'sync:Re-apply after update, detect conflicts'
+                        'status:Show patch health'
+                        'list:List all dependency patches'
+                        'drop:Remove a dependency patch'
+                    )
+                    _arguments -C \
+                        '(- *)'{-h,--help}'[Show help]' \
+                        '1:subcommand:->dep_subcmd' && return
+
+                    case $state in
+                        dep_subcmd)
+                            _describe -t subcommands 'dep subcommand' dep_subcommands
+                            ;;
+                    esac
                     ;;
                 workspace|ws)
                     local -a ws_subcommands=(

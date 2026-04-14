@@ -334,7 +334,7 @@ def test_jsonline_framing():
     else:
         fail('jsonline: initialize response', f'got {resps[0] if resps else "nothing"}')
 
-    if len(resps) >= 2 and len(resps[1].get('result', {}).get('tools', [])) >= 29:
+    if len(resps) >= 2 and len(resps[1].get('result', {}).get('tools', [])) >= 35:
         ok(f'jsonline: tools/list returns {len(resps[1]["result"]["tools"])} tools')
     else:
         fail('jsonline: tools/list', f'got {len(resps[1].get("result", {}).get("tools", [])) if len(resps) >= 2 else 0} tools')

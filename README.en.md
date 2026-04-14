@@ -100,6 +100,7 @@ That's it. Three commands and your fork stays in sync forever.
 - :memo: **`BINGO_DESCRIPTION` env var** -- set patch descriptions without stdin.
 - :mag: **`conflict-analyze --json`** -- structured conflict data: file, ours, theirs, resolution hints.
 - :white_check_mark: **`conflict-resolve`** -- write resolved content via MCP, auto-stage, continue rebase. Zero manual intervention.
+- :package: **Dependency patching** -- `dep patch/apply/sync` for npm/pip packages. Patches survive `npm install`.
 - :satellite: **Advisor agent** -- `contrib/agent.py` monitors drift, analyzes risk, auto-syncs when safe.
 
 ---
@@ -375,6 +376,12 @@ bingo-light patch meta <name> [key] [value]   Get/set patch metadata
 bingo-light conflict-analyze                  Structured conflict data for AI
 bingo-light config get|set|list [key] [val]   Manage configuration
 bingo-light test                              Run configured test suite
+bingo-light dep patch <package> [name]         Patch a modified npm/pip dependency
+bingo-light dep apply [package]               Re-apply dependency patches after install
+bingo-light dep sync                          Re-apply after update + detect conflicts
+bingo-light dep status                        Dependency patch health check
+bingo-light dep list                          List all dependency patches
+bingo-light dep drop <package> [patch]        Remove a dependency patch
 bingo-light workspace init|add|status|sync    Multi-repo management
 bingo-light auto-sync                         Generate GitHub Actions workflow
 bingo-light version                           Print version

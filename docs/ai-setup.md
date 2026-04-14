@@ -148,6 +148,17 @@ bingo-light patch reorder --order "3,1,2" --json --yes
 bingo-light patch squash <idx1> <idx2> --json --yes
 ```
 
+### Dependency patching (npm/pip)
+
+```bash
+bingo-light dep patch <package> [name] --json --yes   # generate patch from modified node_modules/
+bingo-light dep apply --json --yes                     # re-apply all patches after npm install
+bingo-light dep sync --json --yes                      # re-apply after npm update + detect conflicts
+bingo-light dep status --json --yes                    # show patch health
+bingo-light dep list --json --yes                      # list all dependency patches
+bingo-light dep drop <package> --json --yes            # remove patches
+```
+
 ### Diagnostics
 
 ```bash
