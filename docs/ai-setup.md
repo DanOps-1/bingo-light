@@ -1,215 +1,172 @@
-# bingo-light — Installation Guide
+# bingo-light Installation Guide
 
-## For Humans
+## Quick Install
 
-Paste this into your AI agent:
-
-```
-Install and configure bingo-light following:
-https://raw.githubusercontent.com/DanOps-1/bingo-light/main/docs/ai-setup.md
+```bash
+pip install bingo-light    # or: npm install -g bingo-light
+bingo-light setup          # interactive: pick AI tools to configure
 ```
 
-## For LLM Agents
+Requirements: Python 3.8+, git 2.20+. Zero dependencies.
 
-> Fetch with `curl`, not WebFetch. WebFetch summarizes and loses critical details.
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/docs/ai-setup.md
-> ```
+## Step-by-Step Setup
 
-You are helping install bingo-light. Follow the steps below IN ORDER.
+### Step 0: Choose options
 
-Before doing ANYTHING else, say exactly this to the user:
+The installer needs to know your preferences. Here are the options:
 
-```
-bingo-light 安装助手启动！在安装之前，我需要问你几个问题。
-```
+| Option | Choices | Default |
+|--------|---------|---------|
+| Install method | `pip` / `npm` / `brew` | pip |
+| Configure MCP | yes / no | yes (29 tools for fork management) |
+| Install AI Skill | yes / no | yes (teaches the AI bingo-light workflows) |
+| Initialize a fork | upstream URL / skip | skip |
 
-Do NOT run any install or config commands until you have said this AND completed Step 0.
-
-### Constraints (read BEFORE starting)
-
-- DO NOT run `bingo-light mcp-server` — this command does not exist. The MCP binary is `bingo-light-mcp`.
-- DO NOT install anything before Step 0 is complete.
-- DO NOT guess user preferences. ASK.
-- DO NOT write MCP config JSON manually. Use `bingo-light setup`.
-- DO NOT use `python3` to run the MCP server. Use `sys.executable` path from the install.
-
----
-
-### Step 0: Ask the user (BLOCKING — do not skip)
-
-Ask these 4 questions in ONE message. Save the answers as variables.
-If you do not have answers to ALL 4 questions, STOP. Do not execute any commands.
-
-```
-安装前确认：
-
-1. 安装方式？
-   a) pip（推荐）  b) npm  c) brew
-
-2. 要配置 MCP 吗？（推荐选 a，配了之后我能直接调工具帮你管 Fork）
-   a) 要  b) 不要
-
-3. 要安装 AI Skill 吗？（推荐选 a，我会自动学会最佳工作流）
-   a) 要  b) 不要
-
-4. 有 fork 仓库要现在初始化吗？（就是你从别人项目 fork 来的那个）
-   a) 有 → 请给我原始项目的 GitHub 地址
-   b) 没有
-```
-
-Save answers as:
-- `INSTALL_METHOD` = pip | npm | brew
-- `WANT_MCP` = yes | no
-- `WANT_SKILL` = yes | no
-- `UPSTREAM_URL` = URL | none
-
-If user says "全部" / "都要" / "yes to all" → INSTALL_METHOD=pip, WANT_MCP=yes, WANT_SKILL=yes, UPSTREAM_URL=none
-
-**WAIT for user response. Do NOT proceed to Step 1 without these values.**
-
----
+If initializing a fork: the "upstream URL" is the GitHub URL of the original project you forked from (e.g. `https://github.com/original-author/project.git`). You can find it with `git remote -v` in your fork directory.
 
 ### Step 1: Install
 
-Run exactly ONE command based on INSTALL_METHOD:
-
-| INSTALL_METHOD | Command |
-|---|---|
-| pip | `pip install bingo-light 2>/dev/null \|\| pip3 install bingo-light 2>/dev/null \|\| pipx install bingo-light` |
-| npm | `npm install -g bingo-light` |
-| brew | `brew install DanOps-1/tap/bingo-light` |
-
-Then verify:
 ```bash
-bingo-light --version
-```
-Expected: `bingo-light` followed by a version number. If command not found, check PATH.
+# pip (recommended)
+pip install bingo-light
 
----
+# npm alternative
+npm install -g bingo-light
 
-### Step 2: Configure MCP
-
-**If WANT_MCP == no, skip to Step 3.**
-
-Run:
-```bash
-bingo-light setup --yes --json 2>/dev/null
+# brew alternative
+brew install DanOps-1/tap/bingo-light
 ```
 
-Check the JSON output's `"configured"` array. If it lists the user's AI tool, MCP is done.
+Verify: `bingo-light --version` should print `bingo-light 2.1.1` or newer.
 
-**If MCP did NOT connect** (e.g. `"configured"` is empty, or user reports `/mcp` shows nothing after restart):
+### Step 2: Configure MCP + Skills
 
-The most common cause is `bingo-light setup` writing to the wrong config file. Fix by using the CLI directly:
-
-For Claude Code:
-```bash
-claude mcp add bingo-light -- $(python3 -c "import sys; print(sys.executable)") $(which mcp-server.py || which bingo-light-mcp)
-```
-
-For other tools: check that `bingo-light setup` wrote to the correct path (see table below).
-
-| Tool | Config file |
-|---|---|
-| Claude Code | Use `claude mcp add` (writes to `~/.claude.json`) |
-| Cursor | `~/.cursor/mcp.json` |
-| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
-| VS Code / Copilot | `.vscode/mcp.json` (key: `"servers"`) |
-| Zed | `~/.config/zed/settings.json` (key: `"context_servers"`) |
-| Gemini CLI | `~/.gemini/settings.json` |
-
----
-
-### Step 3: Install Skill
-
-**If WANT_SKILL == no, skip to Step 4.**
-
-Check the JSON output from Step 2. If `"skills"` array is non-empty, skills are done.
-
-If `"skills"` is empty, install manually:
-```bash
-curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/.claude/commands/bingo.md -o /tmp/bingo-skill.md
-mkdir -p ~/.claude/commands && cp /tmp/bingo-skill.md ~/.claude/commands/bingo.md
-rm /tmp/bingo-skill.md
-```
-
-For other tools, copy to their rules directory:
-- Windsurf: append to `~/.codeium/windsurf/memories/global_rules.md`
-- Continue: `~/.continue/rules/bingo.md`
-- Roo Code: `~/.roo/rules/bingo.md`
-
----
-
-### Step 4: Initialize fork
-
-**If UPSTREAM_URL == none, skip to Step 5.**
+Run the interactive setup wizard:
 
 ```bash
-cd <user's fork directory>
-bingo-light init <UPSTREAM_URL> --json --yes
+bingo-light setup
 ```
 
-If user doesn't know UPSTREAM_URL, help find it:
-```bash
-git remote -v
-```
-The upstream URL is the original project they forked FROM.
+This detects installed AI tools (Claude Code, Cursor, Windsurf, VS Code, Zed, Gemini CLI, etc.), lets you pick which ones to configure, and writes the correct MCP config + AI skill files.
 
----
-
-### Step 5: Report to user
-
-Say exactly:
-
-```
-安装完成！
-
-- bingo-light: [version from --version]
-- MCP: [list from "configured" or "已通过 claude mcp add 配置"]
-- Skill: [installed / skipped]
-
-请重启 AI 工具 session，然后用 /mcp 确认连接。
-
-重启后你可以告诉我：
-- "帮我同步 Fork"
-- "帮我建一个补丁叫 xxx"
-- "检查 Fork 状态"
-```
-
-Then ask: `如果 bingo-light 对你有用，要不要给项目点个 star？`
-
-Only if user says yes:
-```bash
-gh api --silent --method PUT /user/starred/DanOps-1/bingo-light 2>/dev/null || true
-```
-
----
-
-## Command Reference
-
-After installation, use `--json --yes` for all programmatic calls.
+For non-interactive mode (CI or scripted installs):
 
 ```bash
-bingo-light status --json --yes          # ALWAYS start here
-bingo-light smart-sync --json --yes      # Sync upstream
-bingo-light conflict-analyze --json      # Get ours/theirs/hint
-bingo-light undo --json --yes            # Revert last sync
+bingo-light setup --yes --json
 ```
 
-Conflict resolution:
+The JSON output contains `"configured"` (MCP tools) and `"skills"` (installed skill files).
+
+#### Claude Code MCP troubleshooting
+
+If `/mcp` shows "No MCP servers configured" after running setup, the config may have been written to the wrong file. Fix with:
+
 ```bash
-bingo-light conflict-analyze --json
-# Read hint, write merged file, then:
-git add <file> && git rebase --continue
-# Do NOT run bingo-light sync after this
+claude mcp add bingo-light -- $(which bingo-light-mcp || echo bingo-light-mcp)
 ```
 
-Patches:
+This registers the MCP server in Claude Code's native config (`~/.claude.json`).
+
+#### MCP config paths (for manual setup)
+
+| AI Tool | Config File | JSON Key |
+|---------|-------------|----------|
+| Claude Code | `~/.claude.json` (use `claude mcp add`) | `mcpServers` |
+| Cursor | `~/.cursor/mcp.json` | `mcpServers` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `mcpServers` |
+| VS Code / Copilot | `.vscode/mcp.json` | `servers` |
+| Zed | `~/.config/zed/settings.json` | `context_servers` |
+| Gemini CLI | `~/.gemini/settings.json` | `mcpServers` |
+| Amazon Q | `~/.aws/amazonq/mcp.json` | `mcpServers` |
+
+The MCP server binary is `bingo-light-mcp` (installed alongside `bingo-light`).
+
+#### Skill file manual install
+
+If `bingo-light setup` didn't install skills (the `"skills"` array is empty in JSON output), download manually:
+
 ```bash
-BINGO_DESCRIPTION="desc" bingo-light patch new <name> --json --yes
+curl -fsSL https://raw.githubusercontent.com/DanOps-1/bingo-light/main/.claude/commands/bingo.md \
+  -o ~/.claude/commands/bingo.md
+```
+
+Other skill locations: `~/.continue/rules/bingo.md`, `~/.roo/rules/bingo.md`, `~/.codeium/windsurf/memories/global_rules.md` (append).
+
+### Step 3: Initialize a fork (optional)
+
+```bash
+cd /path/to/your-fork
+bingo-light init https://github.com/original-author/project.git
+```
+
+### Step 4: Verify
+
+```bash
+bingo-light --version        # installed
+bingo-light status --json    # fork status (only after init)
+bingo-light doctor --json    # diagnostics (only after init)
+```
+
+## Usage
+
+All commands support `--json` (structured output) and `--yes` (skip confirmations).
+
+### Sync with upstream
+
+```bash
+bingo-light status --json --yes          # check recommended_action first
+bingo-light smart-sync --json --yes      # sync (handles conflicts automatically)
+bingo-light undo --json --yes            # revert if something went wrong
+```
+
+The `status` command returns a `recommended_action` field: `up_to_date`, `sync_safe`, `sync_risky`, or `resolve_conflict`.
+
+### Conflict resolution
+
+```bash
+bingo-light conflict-analyze --json      # structured conflict data per file
+```
+
+Returns `ours` (upstream version), `theirs` (your patch), and `hint` (suggested resolution strategy) for each conflicted file. After resolving:
+
+```bash
+git add <file>
+git rebase --continue
+```
+
+Note: do not run `bingo-light sync` after resolving — `git rebase --continue` finishes the job.
+
+### Patch management
+
+```bash
+BINGO_DESCRIPTION="description" bingo-light patch new <name> --json --yes
 bingo-light patch list --json --yes
-bingo-light patch show <name|idx> --json --yes
-bingo-light patch drop <name|idx> --json --yes
-bingo-light patch edit <name|idx> --json --yes
+bingo-light patch show <name|index> --json --yes
+bingo-light patch drop <name|index> --json --yes
+bingo-light patch edit <name|index> --json --yes    # stage changes with git add first
+bingo-light patch reorder --order "3,1,2" --json --yes
+bingo-light patch squash <idx1> <idx2> --json --yes
 ```
+
+### Diagnostics
+
+```bash
+bingo-light doctor --json --yes          # full health check
+bingo-light diff --json --yes            # all changes vs upstream
+bingo-light history --json --yes         # sync history with hash mappings
+```
+
+## Key facts
+
+- Patch names: alphanumeric, hyphens, underscores only (`[a-zA-Z0-9][a-zA-Z0-9_-]*`)
+- `BINGO_DESCRIPTION` env var sets the patch description when creating
+- rerere is auto-enabled: conflict resolutions are remembered, same conflict won't recur
+- MCP server binary: `bingo-light-mcp` (not `bingo-light mcp-server` — that command doesn't exist)
+- Re-run `bingo-light setup` anytime to reconfigure MCP/Skills
+
+## Links
+
+- Repository: https://github.com/DanOps-1/bingo-light
+- Issues: https://github.com/DanOps-1/bingo-light/issues
+- PyPI: https://pypi.org/project/bingo-light/
+- npm: https://www.npmjs.com/package/bingo-light
