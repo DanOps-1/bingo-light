@@ -3,6 +3,19 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.2] - 2026-04-14
+
+### Added
+- **Dependency patching** (`bingo-light dep`): patch npm/pip packages, patches survive `npm install`
+  - `dep patch <package>` — generate patch from modified node_modules/site-packages
+  - `dep apply` — re-apply all patches after install
+  - `dep sync` — re-apply after update + detect conflicts
+  - `dep status` / `dep list` / `dep drop` — manage dependency patches
+  - Auto-adds postinstall hook to package.json on first patch
+  - npm backend (registry fetch) + pip backend (PyPI fetch)
+- 6 new MCP tools: `bingo_dep_patch/apply/sync/status/list/drop` (total: 35)
+- 20 dep tests (npm end-to-end + edge cases + unit)
+
 ## [2.1.1] - 2026-04-13
 
 ### Fixed

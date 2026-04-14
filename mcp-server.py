@@ -859,7 +859,7 @@ def main():
                 "capabilities": {"tools": {}},
                 "serverInfo": {
                     "name": "bingo-light",
-                    "version": "2.1.1",
+                    "version": "2.1.2",
                 },
             }))
 
