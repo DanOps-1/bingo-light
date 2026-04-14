@@ -88,7 +88,7 @@ class NpmBackend(DepBackend):
                     # Security: skip absolute paths and ..
                     if member.name.startswith("/") or ".." in member.name:
                         continue
-                    tar.extract(member, dest)
+                    tar.extract(member, dest, filter="data" if hasattr(tarfile, 'data_filter') else None)
 
             os.remove(tmptar)
             return True

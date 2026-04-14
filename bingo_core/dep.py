@@ -540,11 +540,12 @@ def _apply_patch(patch_path: str, target_dir: str) -> Tuple[bool, str]:
     # Try system `patch` command first (most reliable)
     # Patches use a/<pkg>/<file> format, so -p2 strips the a/<pkg>/ prefix
     if shutil.which("patch"):
-        result = subprocess.run(
-            ["patch", "-p2", "-d", target_dir, "--forward", "--batch"],
-            stdin=open(patch_path),
-            capture_output=True, text=True,
-        )
+        with open(patch_path) as pf:
+            result = subprocess.run(
+                ["patch", "-p2", "-d", target_dir, "--forward", "--batch"],
+                stdin=pf,
+                capture_output=True, text=True,
+            )
         if result.returncode == 0:
             return (True, "")
         # patch may partially apply; check if "FAILED" in output
