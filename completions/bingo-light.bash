@@ -10,11 +10,11 @@ _bingo_light() {
     local cur prev words cword
     _init_completion || return
 
-    local -r toplevel_commands="init setup patch dep sync status doctor auto-sync log undo diff version help conflict-analyze conflict-resolve config history test workspace smart-sync session"
+    local -r toplevel_commands="init setup patch dep sync status doctor auto-sync log undo diff version help conflict-analyze conflict-resolve config history test workspace smart-sync session report"
     local -r toplevel_aliases="p s st d ws"
     local -r all_toplevel="${toplevel_commands} ${toplevel_aliases}"
 
-    local -r patch_subcommands="new list show edit drop export import reorder squash meta"
+    local -r patch_subcommands="new list show edit drop export import reorder squash meta lock unlock check upstream expire stats"
     local -r patch_aliases="ls add create rm remove"
     local -r all_patch="${patch_subcommands} ${patch_aliases}"
 
@@ -39,7 +39,7 @@ _bingo_light() {
             dep)
                 cmd="dep"
                 ;;
-            init|setup|doctor|auto-sync|log|undo|version|help|conflict-analyze|conflict-resolve|config|history|test|workspace|ws|smart-sync|session)
+            init|setup|doctor|auto-sync|log|undo|version|help|conflict-analyze|conflict-resolve|config|history|test|workspace|ws|smart-sync|session|report)
                 cmd="${words[i]}"
                 ;;
             *)
@@ -97,7 +97,11 @@ _bingo_light() {
     # Inside "dep" -- complete subcommands
     if [[ "$cmd" == "dep" ]]; then
         if [[ -z "$subcmd" ]]; then
-            COMPREPLY=( $(compgen -W "patch apply sync status list drop" -- "$cur") )
+            COMPREPLY=( $(compgen -W "patch apply sync status list drop override fork" -- "$cur") )
+        elif [[ "$subcmd" == "override" ]]; then
+            COMPREPLY=( $(compgen -W "list check add drop" -- "$cur") )
+        elif [[ "$subcmd" == "fork" ]]; then
+            COMPREPLY=( $(compgen -W "list check sync" -- "$cur") )
         else
             COMPREPLY=( $(compgen -W "--help -h" -- "$cur") )
         fi

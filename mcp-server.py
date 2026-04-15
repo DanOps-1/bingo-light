@@ -231,7 +231,7 @@ TOOLS = [
         "name": "bingo_doctor",
         "description": (
             "Diagnose setup issues: checks git version, rerere, upstream remote, branch structure, "
-            "and tests whether patches apply cleanly on latest upstream."
+            "and tests whether patches apply cleanly on latest upstream. Use report=true for extended checks."
         ),
         "inputSchema": {
             "type": "object",
@@ -239,6 +239,10 @@ TOOLS = [
                 "cwd": {
                     "type": "string",
                     "description": "Path to the git repository"
+                },
+                "report": {
+                    "type": "boolean",
+                    "description": "Include extended checks (team locks, expiry, deps)"
                 }
             },
             "required": ["cwd"]
@@ -549,6 +553,176 @@ TOOLS = [
             "required": ["cwd", "package"]
         }
     },
+    # ── Team / Locking tools ────────────────────────────────────────────
+    {
+        "name": "bingo_patch_lock",
+        "description": "Lock a patch for exclusive editing. Prevents other team members from editing or dropping it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Path to the git repository"},
+                "name": {"type": "string", "description": "Patch name to lock"},
+                "reason": {"type": "string", "description": "Why you are locking this patch"}
+            },
+            "required": ["cwd", "name"]
+        }
+    },
+    {
+        "name": "bingo_patch_unlock",
+        "description": "Unlock a patch, allowing other team members to edit or drop it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Path to the git repository"},
+                "name": {"type": "string", "description": "Patch name to unlock"},
+                "force": {"type": "boolean", "description": "Force unlock even if locked by someone else"}
+            },
+            "required": ["cwd", "name"]
+        }
+    },
+    # ── Smart Patch Management tools ────────────────────────────────────
+    {
+        "name": "bingo_patch_check",
+        "description": "Check if patches are still needed. Detects if upstream has merged equivalent changes, making a patch obsolete.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Path to the git repository"},
+                "name": {"type": "string", "description": "Patch name to check (omit for all patches)"}
+            },
+            "required": ["cwd"]
+        }
+    },
+    {
+        "name": "bingo_patch_upstream",
+        "description": "Export a patch as a clean PR-ready diff suitable for submitting to the upstream repository.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Path to the git repository"},
+                "name": {"type": "string", "description": "Patch name to export"}
+            },
+            "required": ["cwd", "name"]
+        }
+    },
+    {
+        "name": "bingo_patch_expire",
+        "description": "List patches that have passed their expiry date or are expiring soon (within 7 days).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Path to the git repository"}
+            },
+            "required": ["cwd"]
+        }
+    },
+    {
+        "name": "bingo_patch_stats",
+        "description": "Get health metrics for all patches: age, size, conflict frequency.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Path to the git repository"}
+            },
+            "required": ["cwd"]
+        }
+    },
+    # ── Report tool ─────────────────────────────────────────────────────
+    {
+        "name": "bingo_report",
+        "description": "Generate a comprehensive markdown health report covering patches, sync status, team locks, expiry, and dependencies.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Path to the git repository"}
+            },
+            "required": ["cwd"]
+        }
+    },
+    # ── npm Override Management tools ───────────────────────────────────
+    {
+        "name": "bingo_dep_override_list",
+        "description": "List all npm overrides/yarn resolutions with tracked reasons.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Project directory"}
+            },
+            "required": ["cwd"]
+        }
+    },
+    {
+        "name": "bingo_dep_override_check",
+        "description": "Check if npm overrides are still needed by comparing against package-lock.json resolved versions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Project directory"}
+            },
+            "required": ["cwd"]
+        }
+    },
+    {
+        "name": "bingo_dep_override_add",
+        "description": "Add an npm override to package.json with reason tracking.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Project directory"},
+                "package": {"type": "string", "description": "Package to override"},
+                "version": {"type": "string", "description": "Version to force"},
+                "reason": {"type": "string", "description": "Why this override exists"}
+            },
+            "required": ["cwd", "package", "version"]
+        }
+    },
+    {
+        "name": "bingo_dep_override_drop",
+        "description": "Remove an npm override from package.json and tracking.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Project directory"},
+                "package": {"type": "string", "description": "Package to remove override for"}
+            },
+            "required": ["cwd", "package"]
+        }
+    },
+    # ── Fork-as-Dependency Tracking tools ───────────────────────────────
+    {
+        "name": "bingo_dep_fork_list",
+        "description": "List all git-based dependencies in package.json (github:user/repo, git+https://, etc.).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Project directory"}
+            },
+            "required": ["cwd"]
+        }
+    },
+    {
+        "name": "bingo_dep_fork_check",
+        "description": "Check fork drift: compare git dependency refs against latest npm releases and GitHub commits.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Project directory"}
+            },
+            "required": ["cwd"]
+        }
+    },
+    {
+        "name": "bingo_dep_fork_sync",
+        "description": "Update a fork dependency ref in package.json to the latest GitHub commit.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Project directory"},
+                "package": {"type": "string", "description": "Package to update"}
+            },
+            "required": ["cwd", "package"]
+        }
+    },
 ]
 
 # ─── Command Mapping ──────────────────────────────────────────────────────────
@@ -600,7 +774,7 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
             return _result(repo.undo())
 
         elif name == "bingo_doctor":
-            return _result(repo.doctor())
+            return _result(repo.doctor(report=arguments.get("report", False)))
 
         elif name == "bingo_diff":
             return _result(repo.diff())
@@ -709,6 +883,36 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
         elif name == "bingo_workspace_status":
             return _result(repo.workspace_status())
 
+        # ── Team / Locking tools ──────────────────────────────────────────
+        elif name == "bingo_patch_lock":
+            return _result(repo.patch_lock(
+                arguments["name"],
+                reason=arguments.get("reason", ""),
+            ))
+
+        elif name == "bingo_patch_unlock":
+            return _result(repo.patch_unlock(
+                arguments["name"],
+                force=arguments.get("force", False),
+            ))
+
+        # ── Smart Patch Management tools ──────────────────────────────────
+        elif name == "bingo_patch_check":
+            return _result(repo.patch_check(arguments.get("name", "")))
+
+        elif name == "bingo_patch_upstream":
+            return _result(repo.patch_upstream(arguments["name"]))
+
+        elif name == "bingo_patch_expire":
+            return _result(repo.patch_expire())
+
+        elif name == "bingo_patch_stats":
+            return _result(repo.patch_stats())
+
+        # ── Report tool ───────────────────────────────────────────────────
+        elif name == "bingo_report":
+            return _result(repo.report())
+
         # ── Dependency patching tools ────────────────────────────────────
         elif name.startswith("bingo_dep_"):
             from bingo_core.dep import DepManager
@@ -733,6 +937,28 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
                     arguments["package"],
                     arguments.get("patch_name", ""),
                 ))
+            # Override management
+            elif name == "bingo_dep_override_list":
+                return _result(dm.override_list())
+            elif name == "bingo_dep_override_check":
+                return _result(dm.override_check())
+            elif name == "bingo_dep_override_add":
+                return _result(dm.override_add(
+                    arguments["package"], arguments["version"],
+                    arguments.get("reason", ""),
+                ))
+            elif name == "bingo_dep_override_drop":
+                return _result(dm.override_drop(arguments["package"]))
+            # Fork tracking
+            elif name.startswith("bingo_dep_fork_"):
+                from bingo_core.dep_fork import ForkTracker
+                ft = ForkTracker(cwd)
+                if name == "bingo_dep_fork_list":
+                    return _result(ft.fork_list())
+                elif name == "bingo_dep_fork_check":
+                    return _result(ft.fork_check())
+                elif name == "bingo_dep_fork_sync":
+                    return _result(ft.fork_sync(arguments["package"]))
 
         else:
             return {

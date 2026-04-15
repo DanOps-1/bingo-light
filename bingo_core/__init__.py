@@ -42,6 +42,7 @@ from bingo_core.models import PatchInfo, ConflictInfo  # noqa: E402
 from bingo_core.git import Git  # noqa: E402
 from bingo_core.config import Config  # noqa: E402
 from bingo_core.state import State  # noqa: E402
+from bingo_core.team import TeamState  # noqa: E402
 from bingo_core.repo import Repo  # noqa: E402
 
 __all__ = [
@@ -73,5 +74,6 @@ __all__ = [
     "Git",
     "Config",
     "State",
+    "TeamState",
     "Repo",
 ]

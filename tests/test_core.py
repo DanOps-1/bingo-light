@@ -880,5 +880,188 @@ class TestExceptions(unittest.TestCase):
         self.assertIn("dirty", str(e))
 
 
+class TestTeam(unittest.TestCase):
+    """Tests for team collaboration (locking)."""
+
+    def setUp(self):
+        self.upstream, self.fork = _create_upstream_and_fork()
+        self.repo = Repo(self.fork)
+        self.repo.init(self.upstream, "main")
+        # Create a patch
+        with open(os.path.join(self.fork, "feature.txt"), "w") as f:
+            f.write("feature\n")
+        _run("git add -A && git commit -m '[bl] my-patch: test feature'", self.fork)
+
+    def tearDown(self):
+        shutil.rmtree(os.path.dirname(self.upstream), ignore_errors=True)
+
+    def test_lock_unlock_roundtrip(self):
+        result = self.repo.patch_lock("my-patch", reason="working on it")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["patch"], "my-patch")
+        self.assertIn("locked_at", result)
+
+        # Verify lock info
+        lock = self.repo.team.get_lock("my-patch")
+        self.assertIsNotNone(lock)
+        self.assertEqual(lock["reason"], "working on it")
+
+        # Unlock
+        result = self.repo.patch_unlock("my-patch")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["was_locked"])
+
+        # Verify unlocked
+        lock = self.repo.team.get_lock("my-patch")
+        self.assertIsNone(lock)
+
+    def test_lock_conflict(self):
+        # Lock as user A
+        self.repo.team.lock("my-patch", owner="alice")
+
+        # Try to lock as user B
+        with self.assertRaises(BingoError) as ctx:
+            self.repo.team.lock("my-patch", owner="bob")
+        self.assertIn("locked by alice", str(ctx.exception))
+
+    def test_lock_enforcement_patch_drop(self):
+        # Lock as "other-user"
+        self.repo.team.lock("my-patch", owner="other-user")
+
+        # Try to drop — should be blocked
+        with self.assertRaises(BingoError) as ctx:
+            self.repo.patch_drop("my-patch")
+        self.assertIn("locked by other-user", str(ctx.exception))
+
+    def test_lock_enforcement_patch_edit(self):
+        # Lock as "other-user"
+        self.repo.team.lock("my-patch", owner="other-user")
+
+        # Stage a change for edit
+        with open(os.path.join(self.fork, "feature.txt"), "w") as f:
+            f.write("edited\n")
+        _run("git add feature.txt", self.fork)
+
+        # Try to edit — should be blocked
+        with self.assertRaises(BingoError) as ctx:
+            self.repo.patch_edit("my-patch")
+        self.assertIn("locked by other-user", str(ctx.exception))
+
+    def test_unlock_force(self):
+        self.repo.team.lock("my-patch", owner="alice")
+        # Force unlock as different user
+        result = self.repo.team.unlock("my-patch", owner="bob", force=True)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["was_locked"])
+
+    def test_unlock_not_locked(self):
+        result = self.repo.patch_unlock("my-patch")
+        self.assertTrue(result["ok"])
+        self.assertFalse(result.get("was_locked", True))
+
+    def test_list_locks(self):
+        self.repo.patch_lock("my-patch", reason="testing")
+        locks = self.repo.team.list_locks()
+        self.assertEqual(len(locks), 1)
+        self.assertEqual(locks[0]["patch"], "my-patch")
+
+
+class TestSmartPatch(unittest.TestCase):
+    """Tests for smart patch management (check, upstream, expire, stats)."""
+
+    def setUp(self):
+        self.upstream, self.fork = _create_upstream_and_fork()
+        self.repo = Repo(self.fork)
+        self.repo.init(self.upstream, "main")
+        # Create a patch
+        with open(os.path.join(self.fork, "feature.txt"), "w") as f:
+            f.write("my feature\n")
+        _run("git add -A && git commit -m '[bl] test-patch: add feature'", self.fork)
+
+    def tearDown(self):
+        shutil.rmtree(os.path.dirname(self.upstream), ignore_errors=True)
+
+    def test_patch_check_active(self):
+        result = self.repo.patch_check()
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["patches"]), 1)
+        self.assertEqual(result["patches"][0]["name"], "test-patch")
+        self.assertEqual(result["patches"][0]["status"], "active")
+
+    def test_patch_check_obsolete(self):
+        # Make the same change in upstream
+        with open(os.path.join(self.upstream, "feature.txt"), "w") as f:
+            f.write("my feature\n")
+        _run("git add -A && git commit -m 'add feature upstream'", self.upstream)
+        # Fetch upstream in fork
+        _run("git fetch upstream", self.fork)
+        _run("git branch -f upstream-tracking upstream/main", self.fork)
+
+        result = self.repo.patch_check("test-patch")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["patches"][0]["status"], "obsolete")
+
+    def test_patch_upstream_export(self):
+        result = self.repo.patch_upstream("test-patch")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["patch"], "test-patch")
+        self.assertIn("feature.txt", result["diff"])
+        self.assertEqual(result["description"], "add feature")
+        self.assertIn("feature.txt", result["files"])
+
+    def test_patch_expire_none(self):
+        result = self.repo.patch_expire()
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["expired"]), 0)
+        self.assertEqual(len(result["expiring_soon"]), 0)
+
+    def test_patch_expire_past(self):
+        self.repo.state.patch_meta_set("test-patch", "expires", "2020-01-01")
+        result = self.repo.patch_expire()
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["expired"]), 1)
+        self.assertEqual(result["expired"][0]["name"], "test-patch")
+
+    def test_patch_stats(self):
+        result = self.repo.patch_stats()
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["patches"]), 1)
+        p = result["patches"][0]
+        self.assertEqual(p["name"], "test-patch")
+        self.assertGreaterEqual(p["files"], 1)
+
+
+class TestReport(unittest.TestCase):
+    """Tests for the report command."""
+
+    def setUp(self):
+        self.upstream, self.fork = _create_upstream_and_fork()
+        self.repo = Repo(self.fork)
+        self.repo.init(self.upstream, "main")
+        # Create a patch
+        with open(os.path.join(self.fork, "feature.txt"), "w") as f:
+            f.write("feature\n")
+        _run("git add -A && git commit -m '[bl] rpt-patch: report test'", self.fork)
+
+    def tearDown(self):
+        shutil.rmtree(os.path.dirname(self.upstream), ignore_errors=True)
+
+    def test_report_basic(self):
+        result = self.repo.report()
+        self.assertTrue(result["ok"])
+        self.assertIn("# Fork Health Report", result["report"])
+        self.assertIn("Patch Stack", result["report"])
+        self.assertIn("rpt-patch", result["report"])
+        self.assertEqual(result["summary"]["patches"], 1)
+
+    def test_doctor_report_flag(self):
+        result = self.repo.doctor(report=True)
+        self.assertTrue(result["ok"])
+        # Should have the extended checks
+        check_names = [c["name"] for c in result["checks"]]
+        self.assertIn("team_locks", check_names)
+        self.assertIn("patch_expiry", check_names)
+
+
 if __name__ == "__main__":
     unittest.main()

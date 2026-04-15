@@ -500,6 +500,118 @@ def _format_patch_meta(result: dict) -> str:
     return f"  {k}: {v}" if k else f"{_c(GREEN, 'OK')} Done."
 
 
+def _format_patch_lock(result: dict) -> str:
+    """Format patch lock/unlock result."""
+    if result.get("ok") is False:
+        return f"{_c(RED, 'x')} {result.get('error', 'Failed.')}"
+    patch = result.get("patch", "")
+    owner = result.get("owner", "")
+    if result.get("was_locked") is False:
+        return f"{_c(GREEN, 'OK')} {patch} was not locked."
+    if "locked_at" in result:
+        reason = result.get("reason", "")
+        msg = f"{_c(GREEN, 'OK')} Locked {_c(BOLD, patch)} by {owner}"
+        if reason:
+            msg += f" ({reason})"
+        return msg
+    prev = result.get("previous_owner", "")
+    if prev and prev != owner:
+        return f"{_c(GREEN, 'OK')} Unlocked {_c(BOLD, patch)} (was locked by {prev})"
+    return f"{_c(GREEN, 'OK')} Unlocked {_c(BOLD, patch)}"
+
+
+def _format_patch_check(result: dict) -> str:
+    """Format patch check (obsolescence detection) result."""
+    if result.get("ok") is False:
+        return f"{_c(RED, 'x')} {result.get('error', 'Failed.')}"
+    patches = result.get("patches", [])
+    if not patches:
+        return "No patches to check."
+    lines = []
+    for p in patches:
+        status = p.get("status", "unknown")
+        name = p.get("name", "?")
+        reason = p.get("reason", "")
+        if status == "obsolete":
+            lines.append(f"  {_c(YELLOW, 'OBSOLETE')} {_c(BOLD, name)} — {reason}")
+        elif status == "active":
+            lines.append(f"  {_c(GREEN, 'ACTIVE')}   {_c(BOLD, name)} — {reason}")
+        else:
+            lines.append(f"  {_c(DIM, 'UNKNOWN')}  {name} — {reason}")
+    header = f"Checked {len(patches)} patch(es):"
+    return header + "\n" + "\n".join(lines)
+
+
+def _format_patch_upstream(result: dict) -> str:
+    """Format patch upstream (PR-ready export) result."""
+    if result.get("ok") is False:
+        return f"{_c(RED, 'x')} {result.get('error', 'Failed.')}"
+    name = result.get("patch", "")
+    desc = result.get("description", "")
+    files = result.get("files", [])
+    stats = result.get("stats", "")
+    diff = result.get("diff", "")
+    lines = [
+        f"{_c(BOLD, 'PR-ready export:')} {name}",
+        f"  Description: {desc}",
+        f"  Files: {', '.join(files)}",
+    ]
+    if stats:
+        lines.append(f"  Stats: {stats}")
+    lines.append("")
+    lines.append(diff)
+    return "\n".join(lines)
+
+
+def _format_patch_expire(result: dict) -> str:
+    """Format patch expire result."""
+    if result.get("ok") is False:
+        return f"{_c(RED, 'x')} {result.get('error', 'Failed.')}"
+    expired = result.get("expired", [])
+    expiring = result.get("expiring_soon", [])
+    if not expired and not expiring:
+        return f"{_c(GREEN, 'OK')} No expired or expiring patches."
+    lines = []
+    if expired:
+        lines.append(f"{_c(RED, 'Expired')} ({len(expired)}):")
+        for e in expired:
+            lines.append(f"  {_c(RED, 'x')} {_c(BOLD, e['name'])} — expired {e['expires']} ({abs(e['days_left'])}d ago)")
+    if expiring:
+        lines.append(f"{_c(YELLOW, 'Expiring soon')} ({len(expiring)}):")
+        for e in expiring:
+            lines.append(f"  {_c(YELLOW, '!')} {_c(BOLD, e['name'])} — expires {e['expires']} ({e['days_left']}d left)")
+    return "\n".join(lines)
+
+
+def _format_patch_stats(result: dict) -> str:
+    """Format patch stats result."""
+    if result.get("ok") is False:
+        return f"{_c(RED, 'x')} {result.get('error', 'Failed.')}"
+    patches = result.get("patches", [])
+    if not patches:
+        return "No patches."
+    lines = [f"{'#':>3}  {'Name':<20} {'Age':>6} {'Size':>10} {'Syncs':>6} {'Status':<12} {'Owner':<15}"]
+    lines.append("─" * 80)
+    for i, p in enumerate(patches, 1):
+        age = f"{p['age_days']}d" if p.get("age_days", -1) >= 0 else "?"
+        size = f"+{p.get('insertions', 0)}/-{p.get('deletions', 0)}"
+        syncs = str(p.get("syncs_survived", 0))
+        status = p.get("status", "")
+        owner = p.get("owner", "") or p.get("locked_by", "") or ""
+        lines.append(f"{i:>3}  {p['name']:<20} {age:>6} {size:>10} {syncs:>6} {status:<12} {owner:<15}")
+    return "\n".join(lines)
+
+
+def _format_report(result: dict) -> str:
+    """Format fork health report."""
+    if result.get("ok") is False:
+        return f"{_c(RED, 'x')} {result.get('error', 'Failed.')}"
+    report = result.get("report", "")
+    if report:
+        return report
+    return f"{_c(GREEN, 'OK')} Report generated."
+
+
 def _format_undo(result: dict) -> str:
     """Format undo result."""
     if result.get("ok") is False:
@@ -740,7 +852,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("diff", aliases=["d"], add_help=False)
 
     # doctor
-    sub.add_parser("doctor", add_help=False)
+    p_doctor = sub.add_parser("doctor", add_help=False)
+    p_doctor.add_argument("--report", action="store_true")
+
+    # report
+    sub.add_parser("report", add_help=False)
 
     # log
     sub.add_parser("log", add_help=False)
@@ -811,6 +927,23 @@ def build_parser() -> argparse.ArgumentParser:
     pp_meta.add_argument("meta_key", nargs="?", default="")
     pp_meta.add_argument("meta_value", nargs="?", default="")
 
+    pp_lock = patch_sub.add_parser("lock", add_help=False)
+    pp_lock.add_argument("target")
+    pp_lock.add_argument("--reason", default="")
+
+    pp_unlock = patch_sub.add_parser("unlock", add_help=False)
+    pp_unlock.add_argument("target")
+    pp_unlock.add_argument("--force", action="store_true")
+
+    pp_check = patch_sub.add_parser("check", add_help=False)
+    pp_check.add_argument("target", nargs="?", default="")
+
+    pp_upstream = patch_sub.add_parser("upstream", add_help=False)
+    pp_upstream.add_argument("target")
+
+    patch_sub.add_parser("expire", add_help=False)
+    patch_sub.add_parser("stats", add_help=False)
+
     # workspace
     p_ws = sub.add_parser("workspace", aliases=["ws"], add_help=False)
     ws_sub = p_ws.add_subparsers(dest="ws_command")
@@ -853,6 +986,26 @@ def build_parser() -> argparse.ArgumentParser:
     dp_drop.add_argument("dep_package")
     dp_drop.add_argument("dep_patch_name", nargs="?", default="")
 
+    # dep override subcommands
+    dp_override = dep_sub.add_parser("override", add_help=False)
+    override_sub = dp_override.add_subparsers(dest="override_command")
+    override_sub.add_parser("list", add_help=False)
+    override_sub.add_parser("check", add_help=False)
+    ov_add = override_sub.add_parser("add", add_help=False)
+    ov_add.add_argument("override_package")
+    ov_add.add_argument("override_version")
+    ov_add.add_argument("--reason", dest="override_reason", default="")
+    ov_drop = override_sub.add_parser("drop", add_help=False)
+    ov_drop.add_argument("override_package")
+
+    # dep fork subcommands
+    dp_fork = dep_sub.add_parser("fork", add_help=False)
+    fork_sub = dp_fork.add_subparsers(dest="fork_command")
+    fork_sub.add_parser("list", add_help=False)
+    fork_sub.add_parser("check", add_help=False)
+    fk_sync = fork_sub.add_parser("sync", add_help=False)
+    fk_sync.add_argument("fork_package")
+
     # help
     sub.add_parser("help", add_help=False)
 
@@ -884,6 +1037,31 @@ def dispatch(args: argparse.Namespace, json_mode: bool) -> Optional[dict]:
             return dm.sync()
         if dcmd == "drop":
             return dm.drop(args.dep_package, getattr(args, "dep_patch_name", ""))
+        if dcmd == "override":
+            ocmd = getattr(args, "override_command", "")
+            if ocmd == "list":
+                return dm.override_list()
+            if ocmd == "check":
+                return dm.override_check()
+            if ocmd == "add":
+                return dm.override_add(
+                    args.override_package, args.override_version,
+                    getattr(args, "override_reason", ""),
+                )
+            if ocmd == "drop":
+                return dm.override_drop(args.override_package)
+            return {"ok": False, "error": f"Unknown override subcommand: {ocmd}"}
+        if dcmd == "fork":
+            from bingo_core.dep_fork import ForkTracker
+            ft = ForkTracker()
+            fcmd = getattr(args, "fork_command", "")
+            if fcmd == "list":
+                return ft.fork_list()
+            if fcmd == "check":
+                return ft.fork_check()
+            if fcmd == "sync":
+                return ft.fork_sync(args.fork_package)
+            return {"ok": False, "error": f"Unknown fork subcommand: {fcmd}"}
         return {"ok": False, "error": f"Unknown dep subcommand: {dcmd}"}
 
     # setup doesn't need a Repo (works outside git repos)
@@ -919,7 +1097,10 @@ def dispatch(args: argparse.Namespace, json_mode: bool) -> Optional[dict]:
         return repo.diff()
 
     if cmd == "doctor":
-        return repo.doctor()
+        return repo.doctor(report=getattr(args, "report", False))
+
+    if cmd == "report":
+        return repo.report()
 
     if cmd == "log":
         return repo.history()
@@ -1018,6 +1199,24 @@ def _dispatch_patch(args: argparse.Namespace, repo: Repo) -> dict:
             value=meta_value,
         )
 
+    if pcmd == "lock":
+        return repo.patch_lock(args.target, reason=getattr(args, "reason", ""))
+
+    if pcmd == "unlock":
+        return repo.patch_unlock(args.target, force=getattr(args, "force", False))
+
+    if pcmd == "check":
+        return repo.patch_check(getattr(args, "target", ""))
+
+    if pcmd == "upstream":
+        return repo.patch_upstream(args.target)
+
+    if pcmd == "expire":
+        return repo.patch_expire()
+
+    if pcmd == "stats":
+        return repo.patch_stats()
+
     raise BingoError(f"Unknown patch subcommand: {pcmd}")
 
 
@@ -1075,6 +1274,7 @@ _FORMATTERS: Dict[str, Any] = {
     "smart-sync": _format_smart_sync,
     "setup": _format_setup,
     "dep": _format_dep,
+    "report": _format_report,
 }
 
 
@@ -1099,6 +1299,16 @@ def _get_formatter(args: argparse.Namespace):
             return _format_patch_import
         if pcmd == "meta":
             return _format_patch_meta
+        if pcmd in ("lock", "unlock"):
+            return _format_patch_lock
+        if pcmd == "check":
+            return _format_patch_check
+        if pcmd == "upstream":
+            return _format_patch_upstream
+        if pcmd == "expire":
+            return _format_patch_expire
+        if pcmd == "stats":
+            return _format_patch_stats
         return _format_generic
 
     # workspace subcommands

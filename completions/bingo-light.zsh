@@ -30,6 +30,7 @@ _bingo-light() {
         'workspace:Manage multiple forks'
         'smart-sync:Smart sync with circuit breaker and partial state'
         'session:Manage session memory'
+        'report:Generate fork health report'
     )
 
     local -a toplevel_aliases=(
@@ -51,6 +52,12 @@ _bingo-light() {
         'reorder:Reorder the patch stack'
         'squash:Squash two patches into one'
         'meta:Get/set patch metadata'
+        'lock:Lock a patch for exclusive editing'
+        'unlock:Unlock a patch'
+        'check:Check if patches are still needed'
+        'upstream:Export patch as PR-ready diff'
+        'expire:List expired patches'
+        'stats:Show patch health metrics'
     )
 
     local -a patch_aliases=(
@@ -121,7 +128,7 @@ _bingo-light() {
                                 list|ls)
                                     _arguments $patch_list_flags
                                     ;;
-                                new|add|create|show|edit|drop|rm|remove|export|import|reorder|squash|meta)
+                                new|add|create|show|edit|drop|rm|remove|export|import|reorder|squash|meta|lock|unlock|check|upstream|expire|stats)
                                     _arguments $help_flag
                                     ;;
                             esac
@@ -145,6 +152,8 @@ _bingo-light() {
                         'status:Show patch health'
                         'list:List all dependency patches'
                         'drop:Remove a dependency patch'
+                        'override:Manage npm overrides/resolutions'
+                        'fork:Track fork-as-dependency drift'
                     )
                     _arguments -C \
                         '(- *)'{-h,--help}'[Show help]' \
@@ -175,7 +184,7 @@ _bingo-light() {
                             ;;
                     esac
                     ;;
-                init|setup|doctor|auto-sync|log|undo|version|conflict-analyze|conflict-resolve|config|history|test|smart-sync|session)
+                init|setup|doctor|auto-sync|log|undo|version|conflict-analyze|conflict-resolve|config|history|test|smart-sync|session|report)
                     _arguments $help_flag
                     ;;
                 help)

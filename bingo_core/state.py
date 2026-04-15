@@ -184,7 +184,7 @@ class State:
             for t in (v.strip() for v in value.split(",")):
                 if t and t not in tags_list:
                     tags_list.append(t)
-        elif key in ("reason", "expires", "upstream_pr", "status"):
+        elif key in ("reason", "expires", "upstream_pr", "status", "owner"):
             p[key] = value
         self._save_metadata(data)
 

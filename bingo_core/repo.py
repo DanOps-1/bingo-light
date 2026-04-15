@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ from bingo_core.models import ConflictInfo
 from bingo_core.git import Git
 from bingo_core.config import Config
 from bingo_core.state import State
+from bingo_core.team import TeamState
 
 
 class Repo:
@@ -43,6 +45,7 @@ class Repo:
         self.git = Git(self.path)
         self.config = Config(self.path)
         self.state = State(self.path)
+        self.team = TeamState(self.path, git=self.git)
 
     # -- Internal helpers --
 
@@ -211,6 +214,65 @@ class Repo:
             except IOError:
                 pass
         return ""
+
+    def _auto_dep_apply(self) -> Optional[dict]:
+        """Auto-apply dependency patches after a successful sync.
+
+        Returns dep apply result dict, or None if no dep patches configured.
+        """
+        dep_dir = os.path.join(self.path, ".bingo-deps")
+        if not os.path.isdir(dep_dir):
+            return None
+        try:
+            from bingo_core.dep import DepManager
+            dm = DepManager(self.path)
+            return dm.apply()
+        except Exception as e:
+            import sys as _sys
+            print(f"warning: auto dep-apply failed: {e}", file=_sys.stderr)
+            return {"ok": False, "warning": f"dep apply failed: {e}"}
+
+    # Lock file basenames that should be auto-resolved during sync
+    _LOCK_FILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
+
+    # Lock file -> package manager command
+    _LOCK_MANAGERS = {
+        "package-lock.json": ["npm", "install", "--package-lock-only"],
+        "yarn.lock": ["yarn", "install", "--mode", "update-lockfile"],
+        "pnpm-lock.yaml": ["pnpm", "install", "--lockfile-only"],
+    }
+
+    def _resolve_lock_files(self, unresolved: List[str]) -> List[str]:
+        """Auto-resolve lock file conflicts by accepting theirs + regenerating.
+
+        Returns the list of still-unresolved files (lock files removed).
+        """
+        lock_files = [f for f in unresolved if os.path.basename(f) in self._LOCK_FILES]
+        if not lock_files:
+            return unresolved
+
+        for lf in lock_files:
+            # Accept upstream version
+            self.git.run_ok("checkout", "--theirs", "--", lf)
+            self.git.run_ok("add", lf)
+
+            # Try to regenerate via package manager
+            basename = os.path.basename(lf)
+            mgr_cmd = self._LOCK_MANAGERS.get(basename)
+            if (mgr_cmd and shutil.which(mgr_cmd[0])
+                    and os.path.isfile(os.path.join(lock_dir, "package.json"))):
+                lock_dir = os.path.dirname(os.path.join(self.path, lf)) or self.path
+                try:
+                    subprocess.run(
+                        mgr_cmd, cwd=lock_dir,
+                        capture_output=True, text=True, timeout=120,
+                    )
+                    # Re-add after regeneration
+                    self.git.run_ok("add", lf)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass  # Keep the theirs version
+
+        return [f for f in unresolved if f not in lock_files]
 
     def _build_conflict_result(
         self,
@@ -607,8 +669,11 @@ class Repo:
             "reason": reason,
         }
 
-    def doctor(self) -> dict:
+    def doctor(self, report: bool = False) -> dict:
         """Run health checks on the repository.
+
+        Args:
+            report: If True, include extended checks (team locks, expiry, deps).
 
         Returns {"ok": True/False, "issues": N, "checks": [...]}
         """
@@ -734,6 +799,66 @@ class Repo:
             _check("config", "pass", "present")
         else:
             _check("config", "fail", "missing")
+
+        # Extended checks (--report mode)
+        if report:
+            # Stale locks
+            locks = self.team.list_locks()
+            if locks:
+                now = datetime.now(timezone.utc)
+                for lock in locks:
+                    locked_at = lock.get("locked_at", "")
+                    if locked_at:
+                        try:
+                            lock_dt = datetime.strptime(
+                                locked_at, "%Y-%m-%dT%H:%M:%SZ"
+                            ).replace(tzinfo=timezone.utc)
+                            days = (now - lock_dt).days
+                            if days > 7:
+                                _check(
+                                    f"stale_lock:{lock['patch']}",
+                                    "warn",
+                                    f"locked by {lock['owner']} for {days}d",
+                                )
+                        except ValueError:
+                            pass
+                if not any(c_item["name"].startswith("stale_lock:") for c_item in checks):
+                    _check("team_locks", "pass", f"{len(locks)} active lock(s)")
+            else:
+                _check("team_locks", "pass", "no locks")
+
+            # Expired patches
+            try:
+                expire_result = self.patch_expire()
+                n_expired = len(expire_result.get("expired", []))
+                n_expiring = len(expire_result.get("expiring_soon", []))
+                if n_expired > 0:
+                    _check("expired_patches", "warn", f"{n_expired} expired patch(es)")
+                elif n_expiring > 0:
+                    _check("expiring_patches", "warn", f"{n_expiring} expiring soon")
+                else:
+                    _check("patch_expiry", "pass", "none expired")
+            except Exception:
+                pass
+
+            # Dependency patches health
+            dep_dir = os.path.join(self.path, ".bingo-deps")
+            if os.path.isdir(dep_dir):
+                try:
+                    from bingo_core.dep import DepManager
+                    dm = DepManager(self.path)
+                    dep_status = dm.status()
+                    if dep_status.get("ok"):
+                        total = dep_status.get("total_patches", 0)
+                        healthy = dep_status.get("healthy", 0)
+                        if healthy == total:
+                            _check("dep_patches", "pass", f"{total} patch(es) healthy")
+                        else:
+                            _check("dep_patches", "warn", f"{total - healthy}/{total} need attention")
+                    else:
+                        _check("dep_patches", "warn", dep_status.get("error", "unknown"))
+                except Exception:
+                    pass
 
         return {"ok": issues == 0, "issues": issues, "checks": checks}
 
@@ -1187,15 +1312,22 @@ class Repo:
                         "test_error": str(e),
                     }
 
-            return {
+            result = {
                 "ok": True,
                 "synced": True,
                 "behind_before": behind,
                 "patches_rebased": patch_count,
             }
+            dep = self._auto_dep_apply()
+            if dep is not None:
+                result["dep_apply"] = dep
+            return result
 
         # Rebase failed -- check if rerere auto-resolved
         unresolved = self.git.ls_files_unmerged()
+        # Auto-resolve lock file conflicts (package-lock.json, yarn.lock, etc.)
+        if unresolved:
+            unresolved = self._resolve_lock_files(unresolved)
         if not unresolved:
             # rerere resolved everything -- try to continue
             rerere_ok = True
@@ -1233,13 +1365,17 @@ class Repo:
                         "rerere_resolved": True,
                     },
                 )
-                return {
+                result = {
                     "ok": True,
                     "synced": True,
                     "behind_before": behind,
                     "patches_rebased": patch_count,
                     "rerere_resolved": True,
                 }
+                dep = self._auto_dep_apply()
+                if dep is not None:
+                    result["dep_apply"] = dep
+                return result
 
         # Rollback tracking branch
         self.git.run_ok("branch", "-f", c["tracking_branch"], saved_tracking)
@@ -1349,13 +1485,17 @@ class Repo:
             # Clean rebase
             self.state.clear_circuit_breaker()
             self._record_sync(c, behind, saved_tracking)
-            return {
+            result = {
                 "ok": True,
                 "action": "synced",
                 "behind_before": behind,
                 "patches_rebased": patch_count,
                 "conflicts_resolved": 0,
             }
+            dep = self._auto_dep_apply()
+            if dep is not None:
+                result["dep_apply"] = dep
+            return result
 
         # Enter conflict resolution loop
         conflicts_resolved = 0
@@ -1391,6 +1531,21 @@ class Repo:
                 if not unresolved:
                     continue
 
+            # Auto-resolve lock file conflicts before reporting
+            unresolved = self._resolve_lock_files(unresolved)
+            if not unresolved:
+                # Lock files were the only conflicts — try to continue
+                env = os.environ.copy()
+                env["GIT_EDITOR"] = "true"
+                cont_result = subprocess.run(
+                    ["git", "rebase", "--continue"],
+                    cwd=self.path,
+                    capture_output=True, text=True, env=env,
+                )
+                if cont_result.returncode == 0:
+                    conflicts_resolved += 1
+                    continue
+
             # Real unresolved conflicts -- report and stop
             self.git.run_ok("branch", "-f", c["tracking_branch"], saved_tracking)
 
@@ -1415,13 +1570,17 @@ class Repo:
         # If we get here, all conflicts were auto-resolved by rerere
         self.state.clear_circuit_breaker()
         self._record_sync(c, behind, saved_tracking)
-        return {
+        result = {
             "ok": True,
             "action": "synced_with_rerere",
             "behind_before": behind,
             "patches_rebased": patch_count,
             "conflicts_auto_resolved": conflicts_resolved,
         }
+        dep = self._auto_dep_apply()
+        if dep is not None:
+            result["dep_apply"] = dep
+        return result
 
     def undo(self) -> dict:
         """Undo the last sync operation.
@@ -1664,6 +1823,15 @@ class Repo:
         if m:
             pname = m.group(1)
 
+        # Lock enforcement — check by parsed name or by target
+        lock_name = pname or target
+        if lock_name and self.team.is_locked_by_other(lock_name):
+            lock = self.team.get_lock(lock_name)
+            raise BingoError(
+                f"Patch '{lock_name}' is locked by {lock['owner']}. "
+                "They must unlock it first."
+            )
+
         if self.git.current_branch() != c["patches_branch"]:
             self.git.run("checkout", c["patches_branch"])
 
@@ -1694,6 +1862,17 @@ class Repo:
                 "into the patch with 'git add', or stash unstaged changes first."
             )
         hash_val = self._resolve_patch(c, target)
+
+        # Lock enforcement — check by parsed name or by target
+        subject_chk = self.git.run("log", "-1", "--format=%s", hash_val)
+        m_chk = re.match(r"^\[bl\] ([^:]+):", subject_chk)
+        lock_name_chk = m_chk.group(1) if m_chk else target
+        if lock_name_chk and self.team.is_locked_by_other(lock_name_chk):
+            lock = self.team.get_lock(lock_name_chk)
+            raise BingoError(
+                f"Patch '{lock_name_chk}' is locked by {lock['owner']}. "
+                "They must unlock it first."
+            )
 
         has_staged = not self.git.run_ok("diff", "--cached", "--quiet")
         if not has_staged:
@@ -2047,6 +2226,457 @@ class Repo:
         # Set value
         self.state.patch_meta_set(target, key, value)
         return {"ok": True, "patch": target, "set": key, "value": value}
+
+    # -- Team / Locking --
+
+    def patch_lock(self, name: str, reason: str = "") -> dict:
+        """Lock a patch for exclusive editing.
+
+        Returns {"ok": True, "patch": ..., "owner": ..., "locked_at": ...}
+        """
+        c = self._load()
+        # Verify patch exists
+        self._resolve_patch(c, name)
+        return self.team.lock(name, reason=reason)
+
+    def patch_unlock(self, name: str, force: bool = False) -> dict:
+        """Unlock a patch.
+
+        Returns {"ok": True, "patch": ..., "owner": ...}
+        """
+        c = self._load()
+        self._resolve_patch(c, name)
+        return self.team.unlock(name, force=force)
+
+    # -- Smart Patch Management --
+
+    def patch_check(self, name: str = "") -> dict:
+        """Check if patches are still needed (obsolescence detection).
+
+        For each patch, checks whether upstream now contains equivalent changes.
+        Heuristic: apply patch diff to current upstream — if it produces no change,
+        the patch is obsolete.
+
+        Returns {"ok": True, "patches": [{"name", "status", "reason"}]}
+        """
+        c = self._load()
+        base = self._patches_base(c)
+        if not base:
+            return {"ok": True, "patches": [], "count": 0}
+
+        patches = self.git.log_patches(base, c["patches_branch"])
+        if not patches:
+            return {"ok": True, "patches": [], "count": 0}
+
+        # If a specific name given, filter
+        if name:
+            patches = [p for p in patches if p.name == name]
+            if not patches:
+                raise BingoError(f"Patch '{name}' not found.")
+
+        # Get current upstream tip
+        tracking = c.get("tracking_branch", DEFAULT_TRACKING)
+        upstream_head = self.git.rev_parse(tracking)
+        if not upstream_head:
+            return {
+                "ok": True,
+                "patches": [
+                    {"name": p.name, "status": "unknown", "reason": "No upstream tracking branch"}
+                    for p in patches
+                ],
+                "count": len(patches),
+            }
+
+        results = []
+        for p in patches:
+            try:
+                # Get the files this patch touches
+                diff_output = self.git.run(
+                    "diff", "--name-only", f"{p.hash}^", p.hash, check=False
+                )
+                patch_files = [f for f in diff_output.splitlines() if f.strip()]
+
+                if not patch_files:
+                    results.append({"name": p.name, "status": "active", "reason": "No files changed"})
+                    continue
+
+                # Get the patch diff
+                patch_diff = self.git.run(
+                    "diff", f"{p.hash}^", p.hash, check=False
+                )
+
+                # Try applying the patch to upstream in a detached state
+                # If it applies but produces no diff, the changes are already upstream
+                try:
+                    # Check if the patch's changes already exist at upstream
+                    all_match = True
+                    for pf in patch_files:
+                        # Get file content at patch commit
+                        try:
+                            content_at_patch = self.git.run(
+                                "show", f"{p.hash}:{pf}", check=False
+                            )
+                        except GitError:
+                            content_at_patch = ""
+
+                        # Get file content at upstream
+                        try:
+                            content_at_upstream = self.git.run(
+                                "show", f"{tracking}:{pf}", check=False
+                            )
+                        except GitError:
+                            content_at_upstream = ""
+
+                        # Get file content at pre-patch (parent)
+                        try:
+                            content_pre_patch = self.git.run(
+                                "show", f"{p.hash}^:{pf}", check=False
+                            )
+                        except GitError:
+                            content_pre_patch = ""
+
+                        # If upstream already has the same content as post-patch,
+                        # this patch is obsolete for this file
+                        if content_at_upstream != content_at_patch:
+                            all_match = False
+                            break
+
+                    if all_match:
+                        results.append({
+                            "name": p.name,
+                            "status": "obsolete",
+                            "reason": "Upstream contains equivalent changes",
+                        })
+                    else:
+                        # Check if upstream changed same files (potential conflict)
+                        upstream_changed = self.git.run(
+                            "diff", "--name-only", base, tracking, "--", *patch_files,
+                            check=False,
+                        )
+                        if upstream_changed.strip():
+                            results.append({
+                                "name": p.name,
+                                "status": "active",
+                                "reason": "Upstream also modified these files — review recommended",
+                            })
+                        else:
+                            results.append({
+                                "name": p.name,
+                                "status": "active",
+                                "reason": "Patch still applies unique changes",
+                            })
+                except GitError:
+                    results.append({"name": p.name, "status": "active", "reason": "Could not compare"})
+
+            except GitError:
+                results.append({"name": p.name, "status": "unknown", "reason": "Error analyzing patch"})
+
+        return {"ok": True, "patches": results, "count": len(results)}
+
+    def patch_upstream(self, name: str) -> dict:
+        """Export a patch as a clean PR-ready diff for upstream submission.
+
+        Strips [bl] prefix and git metadata — produces a clean diff + description.
+
+        Returns {"ok": True, "patch": ..., "diff": ..., "description": ..., "files": [...]}
+        """
+        c = self._load()
+        hash_val = self._resolve_patch(c, name)
+
+        # Get commit subject and strip [bl] prefix
+        subject = self.git.run("log", "-1", "--format=%s", hash_val)
+        description = subject
+        m = re.match(r"^\[bl\] [^:]+:\s*(.*)", subject)
+        if m:
+            description = m.group(1)
+
+        # Get commit body (if any)
+        body = self.git.run("log", "-1", "--format=%b", hash_val, check=False).strip()
+        if body:
+            description = f"{description}\n\n{body}"
+
+        # Generate clean diff
+        diff = self.git.run("diff", f"{hash_val}^", hash_val, check=False)
+
+        # Get file list
+        files_output = self.git.run(
+            "diff", "--name-only", f"{hash_val}^", hash_val, check=False
+        )
+        files = [f for f in files_output.splitlines() if f.strip()]
+
+        # Get stats
+        stat = self.git.run(
+            "diff", "--stat", f"{hash_val}^", hash_val, check=False
+        ).strip()
+
+        return {
+            "ok": True,
+            "patch": name,
+            "diff": diff,
+            "description": description,
+            "files": files,
+            "stats": stat,
+        }
+
+    def patch_expire(self) -> dict:
+        """List patches that have passed or are approaching their expiry date.
+
+        Returns {"ok": True, "expired": [...], "expiring_soon": [...], "active": [...]}
+        """
+        c = self._load()
+        base = self._patches_base(c)
+        if not base:
+            return {"ok": True, "expired": [], "expiring_soon": [], "active": [], "count": 0}
+
+        patches = self.git.log_patches(base, c["patches_branch"])
+        now = datetime.now(timezone.utc)
+        expired = []
+        expiring_soon = []
+        active = []
+
+        for p in patches:
+            meta = self.state.patch_meta_get(p.name)
+            expires_str = meta.get("expires")
+            if not expires_str:
+                active.append({"name": p.name, "expires": None, "status": "no_expiry"})
+                continue
+
+            try:
+                expires_dt = datetime.strptime(expires_str, "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
+            except ValueError:
+                try:
+                    expires_dt = datetime.strptime(
+                        expires_str, "%Y-%m-%dT%H:%M:%SZ"
+                    ).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    active.append({"name": p.name, "expires": expires_str, "status": "invalid_date"})
+                    continue
+
+            days_left = (expires_dt - now).days
+            entry = {"name": p.name, "expires": expires_str, "days_left": days_left}
+
+            if days_left < 0:
+                entry["status"] = "expired"
+                expired.append(entry)
+            elif days_left <= 7:
+                entry["status"] = "expiring_soon"
+                expiring_soon.append(entry)
+            else:
+                entry["status"] = "active"
+                active.append(entry)
+
+        return {
+            "ok": True,
+            "expired": expired,
+            "expiring_soon": expiring_soon,
+            "active": active,
+            "count": len(expired) + len(expiring_soon),
+        }
+
+    def patch_stats(self) -> dict:
+        """Get health metrics for all patches.
+
+        Returns {"ok": True, "patches": [{"name", "age_days", "files", "insertions",
+        "deletions", "sync_conflicts"}]}
+        """
+        c = self._load()
+        base = self._patches_base(c)
+        if not base:
+            return {"ok": True, "patches": [], "count": 0}
+
+        patches = self.git.log_patches(base, c["patches_branch"])
+        now = datetime.now(timezone.utc)
+
+        # Load sync history for conflict frequency analysis
+        sync_history = self.state.get_sync_history()
+        syncs = sync_history.get("syncs", [])
+
+        results = []
+        for p in patches:
+            meta = self.state.patch_meta_get(p.name)
+
+            # Compute age
+            created_str = meta.get("created", "")
+            age_days = -1
+            if created_str:
+                try:
+                    created_dt = datetime.strptime(
+                        created_str, "%Y-%m-%dT%H:%M:%SZ"
+                    ).replace(tzinfo=timezone.utc)
+                    age_days = (now - created_dt).days
+                except ValueError:
+                    pass
+
+            # Count sync conflicts — look for syncs where this patch name
+            # appeared and the sync had issues
+            sync_count = 0
+            for sync in syncs:
+                for sp in sync.get("patches", []):
+                    if sp.get("name") == p.name:
+                        sync_count += 1
+
+            # Lock info
+            lock = self.team.get_lock(p.name)
+
+            entry = {
+                "name": p.name,
+                "age_days": age_days,
+                "files": p.files,
+                "insertions": p.insertions,
+                "deletions": p.deletions,
+                "status": meta.get("status", "permanent"),
+                "owner": meta.get("owner", ""),
+                "locked_by": lock["owner"] if lock else "",
+                "syncs_survived": sync_count,
+            }
+            results.append(entry)
+
+        return {"ok": True, "patches": results, "count": len(results)}
+
+    # -- Report --
+
+    def report(self) -> dict:
+        """Generate a comprehensive markdown health report.
+
+        Aggregates status, patches, stats, expiry, locks, history, and deps.
+
+        Returns {"ok": True, "report": "<markdown>", "summary": {...}}
+        """
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines = [f"# Fork Health Report", f"Generated: {now}", ""]
+
+        alerts = []
+        patch_count = 0
+        behind = 0
+
+        # Overview
+        try:
+            st = self.status()
+            behind = st.get("behind", 0)
+            patch_count = st.get("patch_count", 0)
+            upstream = st.get("upstream_url", "?")
+            branch = st.get("upstream_branch", "?")
+            action = st.get("recommended_action", "?")
+            lines.append("## Overview")
+            lines.append(f"- Upstream: {upstream} ({branch})")
+            lines.append(f"- Behind: {behind} commit(s)")
+            lines.append(f"- Patches: {patch_count}")
+            lines.append(f"- Recommended action: {action}")
+            last_sync = st.get("last_sync", "")
+            if last_sync:
+                lines.append(f"- Last sync: {last_sync}")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"## Overview\n- Error: {e}\n")
+
+        # Patch Stack
+        try:
+            stats = self.patch_stats()
+            stat_patches = stats.get("patches", [])
+            if stat_patches:
+                lines.append("## Patch Stack")
+                lines.append(f"| # | Name | Age | Size | Syncs | Status | Owner |")
+                lines.append("|---|------|-----|------|-------|--------|-------|")
+                for i, p in enumerate(stat_patches, 1):
+                    age = f"{p['age_days']}d" if p.get("age_days", -1) >= 0 else "?"
+                    size = f"+{p.get('insertions', 0)}/-{p.get('deletions', 0)}"
+                    syncs = str(p.get("syncs_survived", 0))
+                    status = p.get("status", "")
+                    owner = p.get("owner", "") or p.get("locked_by", "") or "-"
+                    lines.append(f"| {i} | {p['name']} | {age} | {size} | {syncs} | {status} | {owner} |")
+                lines.append("")
+        except Exception:
+            pass
+
+        # Expiry
+        try:
+            expire = self.patch_expire()
+            expired = expire.get("expired", [])
+            expiring = expire.get("expiring_soon", [])
+            for e in expired:
+                alerts.append(f"[EXPIRED] patch \"{e['name']}\" expired {e['expires']}")
+            for e in expiring:
+                alerts.append(f"[EXPIRING] patch \"{e['name']}\" expires {e['expires']} ({e['days_left']}d left)")
+        except Exception:
+            pass
+
+        # Team locks
+        try:
+            locks = self.team.list_locks()
+            if locks:
+                now_dt = datetime.now(timezone.utc)
+                for lock in locks:
+                    locked_at = lock.get("locked_at", "")
+                    if locked_at:
+                        try:
+                            lock_dt = datetime.strptime(
+                                locked_at, "%Y-%m-%dT%H:%M:%SZ"
+                            ).replace(tzinfo=timezone.utc)
+                            days = (now_dt - lock_dt).days
+                            if days > 7:
+                                alerts.append(
+                                    f"[STALE LOCK] patch \"{lock['patch']}\" "
+                                    f"locked by {lock['owner']} for {days}d"
+                                )
+                        except ValueError:
+                            pass
+        except Exception:
+            pass
+
+        # Alerts
+        if alerts:
+            lines.append("## Alerts")
+            for a in alerts:
+                lines.append(f"- {a}")
+            lines.append("")
+
+        # Sync History (last 5)
+        try:
+            history = self.state.get_sync_history()
+            syncs = history.get("syncs", [])
+            if syncs:
+                lines.append("## Sync History (last 5)")
+                for sync in syncs[-5:]:
+                    ts = sync.get("timestamp", "?")
+                    n = sync.get("upstream_commits_integrated", 0)
+                    p_count = len(sync.get("patches", []))
+                    lines.append(f"- {ts}: {n} upstream commit(s), {p_count} patch(es)")
+                lines.append("")
+        except Exception:
+            pass
+
+        # Dependencies
+        try:
+            dep_dir = os.path.join(self.path, ".bingo-deps")
+            if os.path.isdir(dep_dir):
+                from bingo_core.dep import DepManager
+                dm = DepManager(self.path)
+                dep_list = dm.list_patches()
+                dep_pkgs = dep_list.get("packages", [])
+                if dep_pkgs:
+                    lines.append("## Dependencies")
+                    for pkg in dep_pkgs:
+                        pname = pkg.get("name", "?")
+                        ver = pkg.get("version", "?")
+                        n_patches = len(pkg.get("patches", []))
+                        lines.append(f"- {pname}@{ver}: {n_patches} patch(es)")
+                    lines.append("")
+        except Exception:
+            pass
+
+        report_text = "\n".join(lines)
+
+        return {
+            "ok": True,
+            "report": report_text,
+            "summary": {
+                "patches": patch_count,
+                "behind": behind,
+                "alerts": len(alerts),
+            },
+        }
 
     # -- Config --
 

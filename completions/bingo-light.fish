@@ -86,6 +86,7 @@ complete -c bingo-light -n __bingo_light_needs_command -a test    -d 'Run config
 complete -c bingo-light -n __bingo_light_needs_command -a workspace -d 'Manage multiple forks'
 complete -c bingo-light -n __bingo_light_needs_command -a smart-sync -d 'Smart sync with circuit breaker and partial state'
 complete -c bingo-light -n __bingo_light_needs_command -a session -d 'Manage session memory'
+complete -c bingo-light -n __bingo_light_needs_command -a report  -d 'Generate fork health report'
 
 # Short aliases
 complete -c bingo-light -n __bingo_light_needs_command -a p  -d 'Alias for patch'
@@ -125,7 +126,7 @@ complete -c bingo-light -n '__bingo_light_using_command version'   -s h -l help 
 complete -c bingo-light -n '__bingo_light_using_command conflict-resolve' -s h -l help -d 'Show help'
 
 # ---- help: complete with command names ----
-complete -c bingo-light -n '__bingo_light_using_command help' -a 'init setup patch dep sync status doctor auto-sync log undo diff version conflict-analyze conflict-resolve config history test workspace smart-sync session' -d 'Command'
+complete -c bingo-light -n '__bingo_light_using_command help' -a 'init setup patch dep sync status doctor auto-sync log undo diff version conflict-analyze conflict-resolve config history test workspace smart-sync session report' -d 'Command'
 
 # ---- patch subcommands (also alias "p") ----
 complete -c bingo-light -n __bingo_light_patch_needs_subcommand -a new     -d 'Create a new patch'
@@ -138,6 +139,12 @@ complete -c bingo-light -n __bingo_light_patch_needs_subcommand -a import  -d 'I
 complete -c bingo-light -n __bingo_light_patch_needs_subcommand -a reorder -d 'Reorder the patch stack'
 complete -c bingo-light -n __bingo_light_patch_needs_subcommand -a squash  -d 'Squash two patches into one'
 complete -c bingo-light -n __bingo_light_patch_needs_subcommand -a meta    -d 'Get/set patch metadata'
+complete -c bingo-light -n __bingo_light_patch_needs_subcommand -a lock    -d 'Lock a patch for exclusive editing'
+complete -c bingo-light -n __bingo_light_patch_needs_subcommand -a unlock  -d 'Unlock a patch'
+complete -c bingo-light -n __bingo_light_patch_needs_subcommand -a check   -d 'Check if patches are still needed'
+complete -c bingo-light -n __bingo_light_patch_needs_subcommand -a upstream -d 'Export patch as PR-ready diff'
+complete -c bingo-light -n __bingo_light_patch_needs_subcommand -a expire  -d 'List expired patches'
+complete -c bingo-light -n __bingo_light_patch_needs_subcommand -a stats   -d 'Show patch health metrics'
 
 # Patch short aliases
 complete -c bingo-light -n __bingo_light_patch_needs_subcommand -a ls     -d 'Alias for list'
@@ -163,6 +170,14 @@ complete -c bingo-light -n '__bingo_light_patch_using_subcommand import'        
 complete -c bingo-light -n '__bingo_light_patch_using_subcommand reorder'           -s h -l help -d 'Show help'
 complete -c bingo-light -n '__bingo_light_patch_using_subcommand squash'            -s h -l help -d 'Show help'
 complete -c bingo-light -n '__bingo_light_patch_using_subcommand meta'              -s h -l help -d 'Show help'
+complete -c bingo-light -n '__bingo_light_patch_using_subcommand lock'              -s h -l help -d 'Show help'
+complete -c bingo-light -n '__bingo_light_patch_using_subcommand lock'              -l reason   -d 'Reason for locking'
+complete -c bingo-light -n '__bingo_light_patch_using_subcommand unlock'            -s h -l help -d 'Show help'
+complete -c bingo-light -n '__bingo_light_patch_using_subcommand unlock'            -l force    -d 'Force unlock even if locked by someone else'
+complete -c bingo-light -n '__bingo_light_patch_using_subcommand check'             -s h -l help -d 'Show help'
+complete -c bingo-light -n '__bingo_light_patch_using_subcommand upstream'          -s h -l help -d 'Show help'
+complete -c bingo-light -n '__bingo_light_patch_using_subcommand expire'            -s h -l help -d 'Show help'
+complete -c bingo-light -n '__bingo_light_patch_using_subcommand stats'             -s h -l help -d 'Show help'
 
 # ---- dep subcommands ----
 
@@ -185,7 +200,9 @@ complete -c bingo-light -n __bingo_light_dep_needs_subcommand -a apply  -d 'Re-a
 complete -c bingo-light -n __bingo_light_dep_needs_subcommand -a sync   -d 'Re-apply after update, detect conflicts'
 complete -c bingo-light -n __bingo_light_dep_needs_subcommand -a status -d 'Show patch health'
 complete -c bingo-light -n __bingo_light_dep_needs_subcommand -a list   -d 'List all dependency patches'
-complete -c bingo-light -n __bingo_light_dep_needs_subcommand -a drop   -d 'Remove a dependency patch'
+complete -c bingo-light -n __bingo_light_dep_needs_subcommand -a drop     -d 'Remove a dependency patch'
+complete -c bingo-light -n __bingo_light_dep_needs_subcommand -a override -d 'Manage npm overrides/resolutions'
+complete -c bingo-light -n __bingo_light_dep_needs_subcommand -a fork     -d 'Track fork-as-dependency drift'
 
 # ---- workspace subcommands (also alias "ws") ----
 
@@ -219,3 +236,5 @@ complete -c bingo-light -n '__bingo_light_using_command test'             -s h -
 complete -c bingo-light -n '__bingo_light_using_command workspace ws'     -s h -l help -d 'Show help'
 complete -c bingo-light -n '__bingo_light_using_command smart-sync'      -s h -l help -d 'Show help'
 complete -c bingo-light -n '__bingo_light_using_command session'         -s h -l help -d 'Show help'
+complete -c bingo-light -n '__bingo_light_using_command report'          -s h -l help -d 'Show help'
+complete -c bingo-light -n '__bingo_light_using_command doctor'          -l report    -d 'Include team, expiry, and dep checks'
