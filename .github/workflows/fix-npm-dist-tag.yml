@@ -1,0 +1,39 @@
+name: Fix npm dist-tag
+
+# Manual one-shot: promote a specific published version to `latest` on npm.
+# Used when release.yml's natural ordering picks the wrong `latest` — e.g.
+# when two tags are pushed together and the older version publishes last.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to promote to the `latest` dist-tag (e.g. 2.2.0)"
+        required: true
+      tag:
+        description: "Dist-tag to set (default: latest)"
+        required: false
+        default: latest
+
+jobs:
+  set-tag:
+    name: Set npm dist-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Promote version to dist-tag
+        run: |
+          npm dist-tag add "bingo-light@${{ inputs.version }}" "${{ inputs.tag }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verify
+        run: |
+          echo "All dist-tags:"
+          npm view bingo-light dist-tags
+          echo "Latest version:"
+          npm view bingo-light version
