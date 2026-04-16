@@ -184,7 +184,14 @@ _bingo-light() {
                             ;;
                     esac
                     ;;
-                init|setup|doctor|auto-sync|log|undo|version|conflict-analyze|conflict-resolve|config|history|test|smart-sync|session|report)
+                conflict-resolve)
+                    _arguments \
+                        '--verify[Run test.command after the final rebase continues]' \
+                        '--content-stdin[Read resolved content from stdin]' \
+                        $help_flag \
+                        '*:file:_files'
+                    ;;
+                init|setup|doctor|auto-sync|log|undo|version|conflict-analyze|config|history|test|smart-sync|session|report)
                     _arguments $help_flag
                     ;;
                 help)

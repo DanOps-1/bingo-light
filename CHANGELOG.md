@@ -3,6 +3,27 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.3] - 2026-04-16
+
+### Added
+- `conflict-analyze` output now includes two new top-level fields when
+  a rebase is in progress:
+  - `patch_intent`: patch name, subject, full commit message,
+    `original_sha`, `original_diff` (truncated at `MAX_DIFF_SIZE`),
+    metadata (reason, tags, upstream_pr, status, owner), and
+    position in the patch stack.
+  - `verify`: configured `test.command` plus per-file verification
+    hints (syntax/parse commands) for `.py`, `.json`, `.yml`,
+    `.yaml`, `.toml`, `.sh`.
+- `conflict-resolve --verify` (CLI) and `bingo_conflict_resolve`
+  `verify: true` (MCP): runs `test.command` after the final
+  rebase `--continue` and attaches `verify_result` to the
+  response. Opt-in; default remains no-op.
+
+### Changed
+- `bingo_conflict_analyze` MCP tool description updated to mention
+  the new `patch_intent` and `verify` fields.
+
 ## [2.1.2] - 2026-04-14
 
 ### Added

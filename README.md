@@ -168,9 +168,26 @@ cd bingo-light && make install && bingo-light setup
       "theirs": "... 你的补丁版本 ...",
       "hint": "上游重构了调度器核心；补丁需要适配新结构。"
     }
-  ]
+  ],
+  "patch_intent": {
+    "name": "custom-scheduler",
+    "subject": "...",
+    "message": "完整 commit 消息",
+    "original_sha": "a1b2c3d...",
+    "original_diff": "diff --git ...",
+    "meta": {"reason": "...", "tags": [], "status": "permanent"},
+    "stack_position": {"index": 3, "total": 7}
+  },
+  "verify": {
+    "test_command": "make test",
+    "file_hints": [
+      {"file": "kernel/sched/core.c", "command": "bash -n ...", "kind": "syntax"}
+    ]
+  }
 }
 ```
+
+`conflict-analyze` 在 rebase 中额外附带 `patch_intent`（补丁意图：原始 commit、diff、metadata、栈位置）与 `verify`（配置的 `test.command` + 按扩展名的逐文件校验命令）。`conflict-resolve --verify` 在最终 `git rebase --continue` 完成后自动跑 `test.command`，结果挂在 `verify_result` 字段。
 
 </details>
 

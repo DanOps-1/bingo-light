@@ -146,6 +146,14 @@ Interactive generator for GitHub Actions workflow. Produces `.github/workflows/b
 
 Analyze conflicts during a paused rebase. Shows structured information about each conflicted file: ours (patch) content, theirs (upstream) content, and hints for resolution. Use `--json` for machine-readable output suitable for AI agents.
 
+During a rebase, the output additionally includes:
+- `patch_intent`: patch name, subject, full commit message, original SHA, original diff, metadata, and stack position.
+- `verify`: configured `test.command` plus per-file syntax/parse commands by extension.
+
+### bingo-light conflict-resolve [--verify]
+
+Write resolved content to a conflicted file, stage it, and continue the rebase. With `--verify`, runs `test.command` after the rebase fully completes and attaches a `verify_result` field with `test: pass|fail|timeout`, `command`, and optional `output`.
+
 ### bingo-light config get|set|list
 
 Manage bingo-light configuration.

@@ -14,7 +14,7 @@ import re
 
 # --- Constants ---
 
-VERSION = "2.1.2"
+VERSION = "2.1.3"
 PATCH_PREFIX = "[bl]"
 CONFIG_FILE = ".bingolight"
 BINGO_DIR = ".bingo"

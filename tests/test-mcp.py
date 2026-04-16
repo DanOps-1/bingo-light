@@ -489,6 +489,17 @@ def test_tool_smoke(fork_dir: str, upstream_dir: str):
     else:
         fail('bingo_conflict_resolve returns response')
 
+    # bingo_conflict_resolve with verify=true (not in rebase, should respond cleanly)
+    msgs = [make_tool_call('bingo_conflict_resolve', {
+        'cwd': fork_dir, 'file': 'app.py', 'content': 'resolved\n',
+        'verify': True,
+    })]
+    resps = send_receive(msgs)
+    if len(resps) == 1 and 'result' in resps[0]:
+        ok('bingo_conflict_resolve accepts verify=true')
+    else:
+        fail('bingo_conflict_resolve accepts verify=true')
+
     # bingo_undo (may fail if nothing to undo, but should respond)
     msgs = [make_tool_call('bingo_undo', {'cwd': fork_dir})]
     resps = send_receive(msgs)

@@ -215,6 +215,111 @@ class Repo:
                 pass
         return ""
 
+    _PATCH_SUBJECT_RE = re.compile(
+        r"^\[bl\]\s+([a-zA-Z0-9][a-zA-Z0-9_-]*)\s*:\s*(.*)$"
+    )
+    _MESSAGE_MAX = 2048
+
+    def _build_patch_intent(self) -> dict:
+        """Assemble patch-intent context for a rebase in progress.
+
+        Returns a dict with: name, subject, message, message_truncated,
+        original_sha, original_diff, diff_truncated, meta, stack_position.
+
+        All fields fall back to empty/None rather than raising. This is
+        defensive context-gathering for AI consumption, not a validator.
+        """
+        result = {
+            "name": "",
+            "subject": "",
+            "message": "",
+            "message_truncated": False,
+            "original_sha": None,
+            "original_diff": None,
+            "diff_truncated": False,
+            "meta": None,
+            "stack_position": None,
+        }
+
+        msg_file = os.path.join(self.path, ".git", "rebase-merge", "message")
+        sha_file = os.path.join(self.path, ".git", "rebase-merge", "stopped-sha")
+
+        try:
+            with open(msg_file) as f:
+                raw_msg = f.read()
+        except (IOError, OSError):
+            return result
+
+        if len(raw_msg) > self._MESSAGE_MAX:
+            result["message"] = raw_msg[: self._MESSAGE_MAX]
+            result["message_truncated"] = True
+        else:
+            result["message"] = raw_msg
+
+        first_line = raw_msg.split("\n", 1)[0]
+        m = self._PATCH_SUBJECT_RE.match(first_line)
+        if m:
+            result["name"] = m.group(1)
+            result["subject"] = m.group(2).strip()
+
+        try:
+            with open(sha_file) as f:
+                sha = f.read().strip()
+            if sha:
+                result["original_sha"] = sha
+                try:
+                    diff = self.git.run("show", "--format=", sha)
+                except GitError:
+                    diff = ""
+                if diff:
+                    if len(diff) > MAX_DIFF_SIZE:
+                        result["original_diff"] = diff[:MAX_DIFF_SIZE]
+                        result["diff_truncated"] = True
+                    else:
+                        result["original_diff"] = diff
+        except (IOError, OSError):
+            pass
+
+        if result["name"]:
+            try:
+                result["meta"] = self.state.patch_meta_get(result["name"])
+            except Exception:
+                result["meta"] = None
+
+            try:
+                c = self._load()
+                base = self._patches_base(c)
+                if base:
+                    try:
+                        log_output = self.git.run(
+                            "rev-list", "--reverse",
+                            f"{base}..{c['patches_branch']}"
+                        )
+                    except GitError:
+                        log_output = ""
+                    shas = log_output.splitlines()
+                    subjects = []
+                    for s in shas:
+                        try:
+                            subj = self.git.run(
+                                "log", "-1", "--format=%s", s
+                            ).strip()
+                        except GitError:
+                            subj = ""
+                        subjects.append(subj)
+                    for idx, subj in enumerate(subjects, start=1):
+                        m2 = self._PATCH_SUBJECT_RE.match(subj)
+                        if m2 and m2.group(1) == result["name"]:
+                            result["stack_position"] = {
+                                "index": idx,
+                                "total": len(subjects),
+                            }
+                            break
+            except Exception:
+                pass
+
+        return result
+
     def _auto_dep_apply(self) -> Optional[dict]:
         """Auto-apply dependency patches after a successful sync.
 
@@ -241,6 +346,36 @@ class Repo:
         "yarn.lock": ["yarn", "install", "--mode", "update-lockfile"],
         "pnpm-lock.yaml": ["pnpm", "install", "--lockfile-only"],
     }
+
+    # Verification command templates by file extension.
+    # Each value is (template, kind). {path} is replaced with shlex.quote(file).
+    # Templates pass the path as argv[1] so nested quoting is not a concern.
+    _VERIFY_HINTS_BY_EXT = {
+        ".py": ("python3 -m py_compile {path}", "syntax"),
+        ".json": ("python3 -c 'import json,sys; json.load(open(sys.argv[1]))' {path}", "parse"),
+        ".yml": ("python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' {path}", "parse"),
+        ".yaml": ("python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' {path}", "parse"),
+        ".toml": ("python3 -c 'import tomllib,sys; tomllib.load(open(sys.argv[1],\"rb\"))' {path}", "parse"),
+        ".sh": ("bash -n {path}", "syntax"),
+    }
+
+    def _verify_hints_for(self, files: List[str]) -> List[dict]:
+        """Generate per-file verification commands by extension.
+
+        Returns a list of dicts: {"file": str, "command": str, "kind": str}.
+        Files with unknown extensions are silently skipped. Paths are passed
+        through shlex.quote to stay shell-safe.
+        """
+        hints: List[dict] = []
+        for f in files:
+            _, ext = os.path.splitext(f)
+            entry = self._VERIFY_HINTS_BY_EXT.get(ext.lower())
+            if entry is None:
+                continue
+            template, kind = entry
+            command = template.format(path=shlex.quote(f))
+            hints.append({"file": f, "command": command, "kind": kind})
+        return hints
 
     def _resolve_lock_files(self, unresolved: List[str]) -> List[str]:
         """Auto-resolve lock file conflicts by accepting theirs + regenerating.
@@ -982,7 +1117,9 @@ class Repo:
     def conflict_analyze(self) -> dict:
         """Analyze current rebase conflicts.
 
-        Returns structured info about each conflicted file.
+        Returns structured info about each conflicted file plus
+        patch-intent context and per-file verification hints when
+        a rebase is in progress.
         """
         self._ensure_git_repo()
 
@@ -996,11 +1133,19 @@ class Repo:
         current_patch = self._current_rebase_patch()
         conflicts = [self._extract_conflict(f) for f in conflicted]
 
+        patch_intent = self._build_patch_intent()
+        verify = {
+            "test_command": self.config.get("test.command") or None,
+            "file_hints": self._verify_hints_for(conflicted),
+        }
+
         return {
             "ok": True,
             "in_rebase": True,
             "current_patch": current_patch,
             "conflicts": [c.to_dict() for c in conflicts],
+            "patch_intent": patch_intent,
+            "verify": verify,
             "resolution_steps": [
                 "1. Read ours (upstream) and theirs (your patch) for each conflict",
                 "2. Write the merged file content (include both changes where possible)",
@@ -1011,7 +1156,9 @@ class Repo:
             ],
         }
 
-    def conflict_resolve(self, file_path: str, content: str = "") -> dict:
+    def conflict_resolve(
+        self, file_path: str, content: str = "", verify: bool = False
+    ) -> dict:
         """Resolve a single conflicted file and continue rebase if possible.
 
         Args:
@@ -1108,12 +1255,35 @@ class Repo:
                     "sync_complete": False,
                 }
             # Rebase fully complete
-            return {
+            result_dict = {
                 "ok": True,
                 "resolved": rel_path,
                 "rebase_continued": True,
                 "sync_complete": True,
             }
+            if verify:
+                test_cmd = self.config.get("test.command")
+                if not test_cmd:
+                    result_dict["verify_result"] = {
+                        "skipped": True,
+                        "reason": "no test.command configured",
+                    }
+                else:
+                    try:
+                        t = self.test()
+                        vr = {
+                            "test": t.get("test", "fail"),
+                            "command": t.get("command", test_cmd),
+                        }
+                        if t.get("output"):
+                            vr["output"] = t["output"]
+                        result_dict["verify_result"] = vr
+                    except BingoError as e:
+                        result_dict["verify_result"] = {
+                            "skipped": True,
+                            "reason": str(e),
+                        }
+            return result_dict
 
         # rebase --continue failed -- check why
         new_unmerged = self.git.ls_files_unmerged()

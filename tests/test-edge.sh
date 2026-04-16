@@ -253,6 +253,45 @@ fi
 # Clean up rebase state
 git rebase --abort &>/dev/null 2>&1 || true
 
+# ─── 7b. Corrupt .git/rebase-merge/stopped-sha ───────────────────────────────
+
+section "7b. Corrupt stopped-sha"
+
+# Use a fresh pair so we don't depend on earlier rebase state.
+repos=$(setup_repos corrupt-sha)
+upstream_b="${repos%%|*}" fork_b="${repos##*|}"
+cd "$fork_b"
+"$BL" init "$upstream_b" main --yes </dev/null &>/dev/null || true
+
+echo "fork-change" >> app.py
+BINGO_DESCRIPTION="corrupt-sha-test" "$BL" patch new corrupt-sha-test --yes &>/dev/null || true
+
+cd "$upstream_b"
+echo "upstream-corrupt" >> app.py
+git add -A && git commit -q -m "upstream conflict for corrupt-sha"
+
+cd "$fork_b"
+timeout 30 "$BL" sync --json --yes &>/dev/null 2>&1 || true
+
+if [[ -d .git/rebase-merge ]]; then
+    # Corrupt stopped-sha to a non-existent hash
+    echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" > .git/rebase-merge/stopped-sha
+    OUT=$("$BL" conflict-analyze --json 2>&1) || true
+    if json_valid "$OUT"; then
+        original_diff=$(echo "$OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); pi=d.get('patch_intent',{}); print(pi.get('original_diff'))" 2>/dev/null)
+        if [[ "$original_diff" == "None" ]]; then
+            pass "conflict-analyze gracefully handles corrupt stopped-sha"
+        else
+            fail "stopped-sha corruption" "expected original_diff=None, got: $original_diff"
+        fi
+    else
+        fail "conflict-analyze with corrupt stopped-sha" "invalid JSON: $OUT"
+    fi
+    git rebase --abort &>/dev/null 2>&1 || true
+else
+    pass "no rebase to corrupt (git version skips this test)"
+fi
+
 # ─── 8. Shallow clone ───────────────────────────────────────────────────────
 
 section "8. Shallow clone"

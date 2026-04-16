@@ -94,6 +94,12 @@ _bingo_light() {
         return
     fi
 
+    # Inside "conflict-resolve"
+    if [[ "$cmd" == "conflict-resolve" ]]; then
+        COMPREPLY=( $(compgen -W "--verify --content-stdin --help -h" -- "$cur") )
+        return
+    fi
+
     # Inside "dep" -- complete subcommands
     if [[ "$cmd" == "dep" ]]; then
         if [[ -z "$subcmd" ]]; then

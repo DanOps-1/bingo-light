@@ -440,6 +440,13 @@ else
     fail "conflict-analyze" "did not detect rebase"
 fi
 
+# Enriched fields (patch_intent + verify) should be present when in rebase
+if echo "$OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'patch_intent' in d and 'verify' in d" 2>/dev/null; then
+    pass "conflict-analyze includes patch_intent + verify"
+else
+    fail "conflict-analyze" "missing patch_intent/verify fields"
+fi
+
 # Abort to clean up
 git rebase --abort &>/dev/null || true
 

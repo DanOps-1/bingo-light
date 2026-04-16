@@ -234,6 +234,7 @@ def _format_conflict_analyze(result: dict) -> str:
     conflicts = result.get("conflicts", [])
     if not conflicts:
         return f"{_c(GREEN, 'OK')} No conflicts detected."
+
     lines = [f"{_c(YELLOW, '!')} {len(conflicts)} conflicting file(s):"]
     for c in conflicts:
         f = c.get("file", "?")
@@ -241,6 +242,33 @@ def _format_conflict_analyze(result: dict) -> str:
         lines.append(f"  {_c(RED, f)}")
         if hint:
             lines.append(f"    hint: {hint}")
+
+    intent = result.get("patch_intent")
+    if intent and intent.get("name"):
+        lines.append("")
+        lines.append(
+            f"{_c(BOLD, 'Patch intent:')} "
+            f"{intent['name']} \u2014 {intent.get('subject', '')}"
+        )
+        meta = intent.get("meta") or {}
+        if meta.get("reason"):
+            lines.append(f"  reason: {meta['reason']}")
+        if meta.get("tags"):
+            lines.append(f"  tags: {', '.join(meta['tags'])}")
+        sp = intent.get("stack_position")
+        if sp:
+            lines.append(f"  position: {sp['index']}/{sp['total']}")
+
+    verify = result.get("verify")
+    if verify:
+        lines.append("")
+        lines.append(f"{_c(BOLD, 'Verify suggestions:')}")
+        tc = verify.get("test_command")
+        if tc:
+            lines.append(f"  test.command: {tc}")
+        for h in verify.get("file_hints", []):
+            lines.append(f"  [{h['kind']}] {h['command']}")
+
     return "\n".join(lines)
 
 
@@ -261,10 +289,18 @@ def _format_conflict_resolve(result: dict) -> str:
         )
 
     if result.get("sync_complete"):
-        return (
-            f"{_c(GREEN, 'OK')} Resolved {resolved} "
-            f"\u2014 sync complete!"
-        )
+        out = f"{_c(GREEN, 'OK')} Resolved {resolved} \u2014 sync complete!"
+        vr = result.get("verify_result")
+        if vr:
+            if vr.get("skipped"):
+                out += f"\n  verify: skipped ({vr.get('reason', '')})"
+            elif vr.get("test") == "pass":
+                out += f"\n  {_c(GREEN, 'verify: PASS')} ({vr.get('command', '')})"
+            elif vr.get("test") == "fail":
+                out += f"\n  {_c(RED, 'verify: FAIL')} ({vr.get('command', '')})"
+            else:
+                out += f"\n  verify: {vr.get('test', '?')}"
+        return out
 
     if result.get("conflict"):
         patch = result.get("current_patch", "")
@@ -284,10 +320,18 @@ def _format_conflict_resolve(result: dict) -> str:
         return "\n".join(lines)
 
     if result.get("rebase_continued"):
-        return (
-            f"{_c(GREEN, 'OK')} Resolved {resolved} "
-            f"\u2014 rebase continued."
-        )
+        out = f"{_c(GREEN, 'OK')} Resolved {resolved} \u2014 rebase continued."
+        vr = result.get("verify_result")
+        if vr:
+            if vr.get("skipped"):
+                out += f"\n  verify: skipped ({vr.get('reason', '')})"
+            elif vr.get("test") == "pass":
+                out += f"\n  {_c(GREEN, 'verify: PASS')} ({vr.get('command', '')})"
+            elif vr.get("test") == "fail":
+                out += f"\n  {_c(RED, 'verify: FAIL')} ({vr.get('command', '')})"
+            else:
+                out += f"\n  verify: {vr.get('test', '?')}"
+        return out
 
     return f"{_c(GREEN, 'OK')} Resolved {resolved}."
 
@@ -871,6 +915,8 @@ def build_parser() -> argparse.ArgumentParser:
     cr = sub.add_parser("conflict-resolve", add_help=False)
     cr.add_argument("resolve_file", nargs="?", default="")
     cr.add_argument("--content-stdin", action="store_true")
+    cr.add_argument("--verify", action="store_true",
+                    help="Run test.command after the final rebase continues")
 
     # session
     p_session = sub.add_parser("session", add_help=False)
@@ -1116,7 +1162,9 @@ def dispatch(args: argparse.Namespace, json_mode: bool) -> Optional[dict]:
         if args.content_stdin:
             import sys as _sys
             content = _sys.stdin.read()
-        return repo.conflict_resolve(args.resolve_file, content)
+        return repo.conflict_resolve(
+            args.resolve_file, content, verify=args.verify
+        )
 
     if cmd == "session":
         update = (args.session_action == "update")

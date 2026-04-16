@@ -229,6 +229,23 @@ else
     fail "patch new bad-name --json" "N/A" "patch new 'bad name!' --json --yes" "$OUT"
 fi
 
+# ─── 6. conflict-resolve --verify outside rebase ─────────────────────────────
+
+section "6. conflict-resolve --verify (no rebase)"
+
+fork=$(setup_repo "verify-fuzz")
+cd "$fork"
+
+# Not in rebase — expect graceful error; if JSON, must parse.
+OUT=$("$BL" conflict-resolve --verify foo --json 2>&1) || true
+if validate_json "$OUT"; then
+    pass "conflict-resolve --verify outside rebase: valid JSON"
+elif [[ "$OUT" == *"No rebase in progress"* || "$OUT" == *"nothing to resolve"* ]]; then
+    pass "conflict-resolve --verify outside rebase: clean error"
+else
+    fail "conflict-resolve --verify outside rebase" "N/A" "conflict-resolve --verify foo --json" "$OUT"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 
 echo ""

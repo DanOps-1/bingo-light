@@ -287,8 +287,10 @@ TOOLS = [
     {
         "name": "bingo_conflict_analyze",
         "description": (
-            "Analyze current rebase conflicts. Returns structured info about each conflicted file: "
-            "the 'ours' version (upstream), 'theirs' version (your patch), conflict count, and resolution hints. "
+            "Analyze current rebase conflicts. Returns structured info about each conflicted file "
+            "(ours/theirs, conflict count, hints) plus patch_intent (name, subject, full commit "
+            "message, original_sha, original_diff, meta, stack_position) and verify "
+            "(test_command + per-file syntax/parse commands). "
             "Call this when bingo_sync reports a conflict to understand what needs fixing."
         ),
         "inputSchema": {
@@ -306,7 +308,9 @@ TOOLS = [
         "name": "bingo_conflict_resolve",
         "description": (
             "Resolve a conflict during rebase by writing the resolved content to a file, "
-            "staging it, and continuing the rebase. Use after bingo_conflict_analyze."
+            "staging it, and continuing the rebase. Use after bingo_conflict_analyze. "
+            "Set verify=true to run test.command after the final rebase --continue; "
+            "the result is attached as verify_result."
         ),
         "inputSchema": {
             "type": "object",
@@ -322,6 +326,10 @@ TOOLS = [
                 "content": {
                     "type": "string",
                     "description": "The fully resolved file content (no conflict markers)"
+                },
+                "verify": {
+                    "type": "boolean",
+                    "description": "If true, run test.command after the final rebase --continue. Default false."
                 }
             },
             "required": ["cwd", "file", "content"]
@@ -789,6 +797,7 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
             return _result(repo.conflict_resolve(
                 arguments.get("file", ""),
                 arguments.get("content", ""),
+                verify=bool(arguments.get("verify", False)),
             ))
 
         elif name == "bingo_log":
@@ -1085,7 +1094,7 @@ def main():
                 "capabilities": {"tools": {}},
                 "serverInfo": {
                     "name": "bingo-light",
-                    "version": "2.1.2",
+                    "version": "2.1.3",
                 },
             }))
 

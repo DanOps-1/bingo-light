@@ -69,6 +69,12 @@ That's it. Three commands and your fork stays in sync forever.
 
 > The AI calls `conflict-analyze --json`, reads the structured ours/theirs data, writes the merged file, and the rebase continues. No human needed.
 
+During a rebase, `conflict-analyze` also returns:
+- **`patch_intent`** — patch name, subject, full commit message, original SHA, original diff, metadata (reason/tags/upstream_pr/status/owner), and position in the patch stack.
+- **`verify`** — configured `test.command` plus per-file syntax/parse commands by extension (`.py/.json/.yml/.yaml/.toml/.sh`).
+
+`conflict-resolve --verify` (CLI) or `verify: true` (MCP) runs `test.command` after the final `git rebase --continue`; the result is attached as `verify_result`.
+
 ---
 
 ## Key Features

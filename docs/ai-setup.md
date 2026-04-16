@@ -124,10 +124,19 @@ The `status` command returns a `recommended_action` field: `up_to_date`, `sync_s
 ### Conflict resolution
 
 ```bash
-bingo-light conflict-analyze --json      # structured conflict data per file
+bingo-light conflict-analyze --json           # structured conflict data per file
+bingo-light conflict-resolve <file> --verify  # resolve a file; run test.command at rebase end
 ```
 
-Returns `ours` (upstream version), `theirs` (your patch), and `hint` (suggested resolution strategy) for each conflicted file. After resolving:
+Returns `ours` (upstream version), `theirs` (your patch), and `hint` (suggested resolution strategy) for each conflicted file.
+
+During a rebase, `conflict-analyze` also returns:
+- `patch_intent`: patch name, subject, full commit message, original SHA, original diff, metadata (reason, tags, upstream_pr, status, owner), and stack position.
+- `verify`: configured `test.command` + per-file verification hints (syntax/parse commands for `.py`, `.json`, `.yml`, `.yaml`, `.toml`, `.sh`).
+
+`conflict-resolve --verify` (CLI) or `verify: true` (MCP tool `bingo_conflict_resolve`) runs `test.command` after the final `git rebase --continue`; the result is attached as `verify_result`.
+
+After resolving manually (without the helper):
 
 ```bash
 git add <file>

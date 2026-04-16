@@ -824,8 +824,8 @@ class TestRepo(unittest.TestCase):
             shutil.rmtree(tmpconfig, ignore_errors=True)
 
     def test_version_constant(self):
-        """VERSION should be 2.1.2."""
-        self.assertEqual(VERSION, "2.1.2")
+        """VERSION should be 2.1.3."""
+        self.assertEqual(VERSION, "2.1.3")
 
 
 class TestDataClasses(unittest.TestCase):
@@ -1061,6 +1061,311 @@ class TestReport(unittest.TestCase):
         check_names = [c["name"] for c in result["checks"]]
         self.assertIn("team_locks", check_names)
         self.assertIn("patch_expiry", check_names)
+
+
+class TestVerifyHints(unittest.TestCase):
+    """Unit tests for Repo._verify_hints_for."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix="bl-vh-")
+        _create_git_repo(self.tmpdir)
+        self.repo = Repo(self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_py_extension(self):
+        hints = self.repo._verify_hints_for(["src/app.py"])
+        self.assertEqual(len(hints), 1)
+        self.assertEqual(hints[0]["file"], "src/app.py")
+        self.assertEqual(hints[0]["kind"], "syntax")
+        self.assertEqual(hints[0]["command"], "python3 -m py_compile src/app.py")
+
+    def test_json_extension(self):
+        hints = self.repo._verify_hints_for(["pkg.json"])
+        self.assertEqual(len(hints), 1)
+        self.assertEqual(hints[0]["kind"], "parse")
+        self.assertIn("json.load", hints[0]["command"])
+        self.assertTrue(hints[0]["command"].endswith("pkg.json"))
+
+    def test_yaml_extensions(self):
+        h1 = self.repo._verify_hints_for(["a.yml"])
+        h2 = self.repo._verify_hints_for(["b.yaml"])
+        self.assertEqual(len(h1), 1)
+        self.assertEqual(len(h2), 1)
+        self.assertIn("yaml.safe_load", h1[0]["command"])
+        self.assertIn("yaml.safe_load", h2[0]["command"])
+
+    def test_toml_extension(self):
+        hints = self.repo._verify_hints_for(["pyproject.toml"])
+        self.assertEqual(len(hints), 1)
+        self.assertIn("tomllib.load", hints[0]["command"])
+
+    def test_sh_extension(self):
+        hints = self.repo._verify_hints_for(["run.sh"])
+        self.assertEqual(len(hints), 1)
+        self.assertEqual(hints[0]["command"], "bash -n run.sh")
+        self.assertEqual(hints[0]["kind"], "syntax")
+
+    def test_unknown_extension_skipped(self):
+        hints = self.repo._verify_hints_for(["data.xyz", "no-ext"])
+        self.assertEqual(hints, [])
+
+    def test_mixed_files_preserves_order(self):
+        hints = self.repo._verify_hints_for(["a.py", "skip.xyz", "b.json"])
+        self.assertEqual(len(hints), 2)
+        self.assertEqual(hints[0]["file"], "a.py")
+        self.assertEqual(hints[1]["file"], "b.json")
+
+    def test_path_with_space_is_shell_quoted(self):
+        hints = self.repo._verify_hints_for(["has space.py"])
+        self.assertEqual(len(hints), 1)
+        self.assertIn("'has space.py'", hints[0]["command"])
+
+    def test_empty_list(self):
+        self.assertEqual(self.repo._verify_hints_for([]), [])
+
+
+class TestPatchIntent(unittest.TestCase):
+    """Unit tests for Repo._build_patch_intent.
+
+    These use synthetic .git/rebase-merge/ contents so we don't need
+    to induce a real rebase for unit coverage. The full end-to-end
+    path is covered in the conflict_analyze integration tests.
+    """
+
+    def setUp(self):
+        self.upstream, self.fork = _create_upstream_and_fork()
+        self.repo = Repo(self.fork)
+        self.repo.init(self.upstream, "main")
+
+    def tearDown(self):
+        shutil.rmtree(os.path.dirname(self.upstream), ignore_errors=True)
+
+    def _seed_rebase_state(self, message, sha=None):
+        """Write synthetic .git/rebase-merge/{message,stopped-sha}."""
+        rdir = os.path.join(self.fork, ".git", "rebase-merge")
+        os.makedirs(rdir, exist_ok=True)
+        with open(os.path.join(rdir, "message"), "w") as f:
+            f.write(message)
+        if sha is not None:
+            with open(os.path.join(rdir, "stopped-sha"), "w") as f:
+                f.write(sha + "\n")
+
+    def test_no_rebase_returns_empty_skeleton(self):
+        intent = self.repo._build_patch_intent()
+        self.assertEqual(intent["name"], "")
+        self.assertEqual(intent["subject"], "")
+        self.assertEqual(intent["message"], "")
+        self.assertIsNone(intent["original_sha"])
+        self.assertIsNone(intent["original_diff"])
+        self.assertIsNone(intent["meta"])
+        self.assertIsNone(intent["stack_position"])
+        self.assertFalse(intent["message_truncated"])
+        self.assertFalse(intent["diff_truncated"])
+
+    def test_non_bingo_commit_message(self):
+        self._seed_rebase_state("Some upstream commit\n\nBody text")
+        intent = self.repo._build_patch_intent()
+        self.assertEqual(intent["name"], "")
+        self.assertEqual(intent["subject"], "")
+        self.assertEqual(intent["message"], "Some upstream commit\n\nBody text")
+        self.assertIsNone(intent["meta"])
+        self.assertIsNone(intent["stack_position"])
+
+    def test_bingo_commit_name_parsed(self):
+        self._seed_rebase_state(
+            "[bl] foo: disable analytics\n\nKeep privacy-first default."
+        )
+        intent = self.repo._build_patch_intent()
+        self.assertEqual(intent["name"], "foo")
+        self.assertEqual(intent["subject"], "disable analytics")
+        self.assertIn("disable analytics", intent["message"])
+        self.assertIn("privacy-first", intent["message"])
+
+    def test_missing_stopped_sha(self):
+        self._seed_rebase_state("[bl] foo: test", sha=None)
+        intent = self.repo._build_patch_intent()
+        self.assertIsNone(intent["original_sha"])
+        self.assertIsNone(intent["original_diff"])
+
+    def test_stopped_sha_points_to_head(self):
+        head = _run("git rev-parse HEAD", self.fork)
+        self._seed_rebase_state("[bl] foo: test", sha=head)
+        intent = self.repo._build_patch_intent()
+        self.assertEqual(intent["original_sha"], head)
+        self.assertIsNotNone(intent["original_diff"])
+        self.assertFalse(intent["diff_truncated"])
+
+    def test_invalid_stopped_sha(self):
+        self._seed_rebase_state("[bl] foo: test", sha="deadbeef" * 5)
+        intent = self.repo._build_patch_intent()
+        self.assertEqual(intent["original_sha"], "deadbeef" * 5)
+        self.assertIsNone(intent["original_diff"])
+
+    def test_message_truncation(self):
+        big = "[bl] foo: short\n\n" + ("x" * 3000)
+        self._seed_rebase_state(big)
+        intent = self.repo._build_patch_intent()
+        self.assertTrue(intent["message_truncated"])
+        self.assertLessEqual(len(intent["message"]), 2048)
+
+    def test_diff_truncation(self):
+        big_file = os.path.join(self.fork, "big.txt")
+        with open(big_file, "w") as f:
+            f.write("x" * 100000)
+        _run("git add -A && git commit -m 'big'", self.fork)
+        head = _run("git rev-parse HEAD", self.fork)
+        self._seed_rebase_state("[bl] foo: big", sha=head)
+        intent = self.repo._build_patch_intent()
+        self.assertTrue(intent["diff_truncated"])
+        self.assertLessEqual(len(intent["original_diff"]), 50000)
+
+    def test_meta_populated_for_known_patch(self):
+        state = State(self.fork)
+        state.patch_meta_set("foo", "reason", "privacy")
+        self._seed_rebase_state("[bl] foo: short")
+        intent = self.repo._build_patch_intent()
+        self.assertIsNotNone(intent["meta"])
+        self.assertEqual(intent["meta"]["reason"], "privacy")
+
+
+class TestConflictAnalyzeEnriched(unittest.TestCase):
+    """Integration: conflict_analyze output includes patch_intent and verify fields."""
+
+    def setUp(self):
+        self.upstream, self.fork = _create_upstream_and_fork()
+        self.repo = Repo(self.fork)
+        self.repo.init(self.upstream, "main")
+
+    def tearDown(self):
+        shutil.rmtree(os.path.dirname(self.upstream), ignore_errors=True)
+
+    def _induce_conflict(self):
+        """Create a patch touching foo.py, upstream-modify the same file,
+        sync to induce a rebase conflict."""
+        foo = os.path.join(self.fork, "foo.py")
+        with open(foo, "w") as f:
+            f.write("print('fork version')\n")
+        _run("git add -A && git commit -m '[bl] custom: add foo.py'", self.fork)
+        _run("git branch -f bingo-patches HEAD", self.fork)
+
+        foo_up = os.path.join(self.upstream, "foo.py")
+        with open(foo_up, "w") as f:
+            f.write("print('upstream version')\n")
+        _run("git add -A && git commit -m 'upstream foo'", self.upstream)
+
+        _run("git fetch upstream", self.fork)
+        _run("git branch -f upstream-tracking upstream/main", self.fork)
+        _run("git checkout bingo-patches", self.fork)
+        subprocess.run(
+            ["git", "rebase", "upstream-tracking"],
+            cwd=self.fork, capture_output=True,
+        )
+
+    def test_output_contains_new_keys_when_in_rebase(self):
+        self._induce_conflict()
+        result = self.repo.conflict_analyze()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["in_rebase"])
+        self.assertIn("patch_intent", result)
+        self.assertIn("verify", result)
+
+    def test_patch_intent_fields_populated(self):
+        self._induce_conflict()
+        result = self.repo.conflict_analyze()
+        pi = result["patch_intent"]
+        self.assertEqual(pi["name"], "custom")
+        self.assertIn("add foo.py", pi["subject"])
+        self.assertIsNotNone(pi["original_sha"])
+
+    def test_verify_has_file_hints_for_py(self):
+        self._induce_conflict()
+        result = self.repo.conflict_analyze()
+        hints = result["verify"]["file_hints"]
+        self.assertTrue(any(h["file"] == "foo.py" for h in hints))
+
+    def test_verify_test_command_nullable(self):
+        self._induce_conflict()
+        result = self.repo.conflict_analyze()
+        self.assertIn("test_command", result["verify"])
+        self.assertIsNone(result["verify"]["test_command"])
+
+    def test_verify_test_command_populated(self):
+        self.repo.config_set("test.command", "make test")
+        self._induce_conflict()
+        result = self.repo.conflict_analyze()
+        self.assertEqual(result["verify"]["test_command"], "make test")
+
+    def test_no_new_keys_when_not_in_rebase(self):
+        result = self.repo.conflict_analyze()
+        self.assertFalse(result["in_rebase"])
+        self.assertNotIn("patch_intent", result)
+        self.assertNotIn("verify", result)
+
+
+class TestConflictResolveVerify(unittest.TestCase):
+    """conflict_resolve(verify=True) runs test.command after final rebase continue."""
+
+    def setUp(self):
+        self.upstream, self.fork = _create_upstream_and_fork()
+        self.repo = Repo(self.fork)
+        self.repo.init(self.upstream, "main")
+
+    def tearDown(self):
+        shutil.rmtree(os.path.dirname(self.upstream), ignore_errors=True)
+
+    def _induce_single_patch_conflict(self):
+        foo = os.path.join(self.fork, "foo.py")
+        with open(foo, "w") as f:
+            f.write("print('fork')\n")
+        _run("git add -A && git commit -m '[bl] custom: add foo.py'", self.fork)
+        _run("git branch -f bingo-patches HEAD", self.fork)
+
+        foo_up = os.path.join(self.upstream, "foo.py")
+        with open(foo_up, "w") as f:
+            f.write("print('upstream')\n")
+        _run("git add -A && git commit -m 'upstream foo'", self.upstream)
+        _run("git fetch upstream", self.fork)
+        _run("git branch -f upstream-tracking upstream/main", self.fork)
+        _run("git checkout bingo-patches", self.fork)
+        subprocess.run(
+            ["git", "rebase", "upstream-tracking"],
+            cwd=self.fork, capture_output=True,
+        )
+
+    def test_verify_false_default_no_test_run(self):
+        self._induce_single_patch_conflict()
+        result = self.repo.conflict_resolve("foo.py", "print('merged')\n")
+        self.assertTrue(result["ok"])
+        self.assertNotIn("verify_result", result)
+
+    def test_verify_true_no_test_command_skipped(self):
+        self._induce_single_patch_conflict()
+        result = self.repo.conflict_resolve(
+            "foo.py", "print('merged')\n", verify=True
+        )
+        self.assertTrue(result["ok"])
+        self.assertIn("verify_result", result)
+        self.assertTrue(result["verify_result"].get("skipped"))
+
+    def test_verify_true_test_passes(self):
+        self.repo.config_set("test.command", "true")
+        self._induce_single_patch_conflict()
+        result = self.repo.conflict_resolve(
+            "foo.py", "print('merged')\n", verify=True
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["verify_result"]["test"], "pass")
+
+    def test_verify_true_test_fails_still_ok_true(self):
+        self.repo.config_set("test.command", "false")
+        self._induce_single_patch_conflict()
+        result = self.repo.conflict_resolve(
+            "foo.py", "print('merged')\n", verify=True
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["verify_result"]["test"], "fail")
 
 
 if __name__ == "__main__":

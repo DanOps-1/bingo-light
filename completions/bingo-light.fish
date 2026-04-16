@@ -124,6 +124,8 @@ complete -c bingo-light -n '__bingo_light_using_command version'   -s h -l help 
 
 # ---- conflict-resolve flags ----
 complete -c bingo-light -n '__bingo_light_using_command conflict-resolve' -s h -l help -d 'Show help'
+complete -c bingo-light -n '__bingo_light_using_command conflict-resolve' -l verify -d 'Run test.command after the final rebase continues'
+complete -c bingo-light -n '__bingo_light_using_command conflict-resolve' -l content-stdin -d 'Read resolved content from stdin'
 
 # ---- help: complete with command names ----
 complete -c bingo-light -n '__bingo_light_using_command help' -a 'init setup patch dep sync status doctor auto-sync log undo diff version conflict-analyze conflict-resolve config history test workspace smart-sync session report' -d 'Command'
